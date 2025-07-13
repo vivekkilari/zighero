@@ -1,0 +1,17 @@
+.{
+    .name = .zighero,
+    .version = "0.0.0",
+    .fingerprint = 0xa117144eface2473, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.0-dev.905+edf785db0",
+    .dependencies = .{
+        .zigwin32 = .{
+            .url = "git+https://github.com/marlersoft/zigwin32#d21b419d808215e1f82605fdaddc49750bfa3bca",
+            .hash = "zigwin32-25.0.28-preview-AAAAAI0J-wP-8_KKo4Yjr33XLhVhlJmeagGUedByaOnX",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
