@@ -14,7 +14,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.linkSystemLibrary("user32");
+    exe.linkSystemLibrary("User32");
+    exe.linkSystemLibrary("Gdi32");
+
 
     // win32 API Zig bindings
     const zwin32 = b.dependency("zigwin32", .{});
