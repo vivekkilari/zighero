@@ -22,6 +22,13 @@ pub fn build(b: *std.Build) void {
     const zwin32 = b.dependency("zigwin32", .{});
     exe.root_module.addImport("win32", zwin32.module("win32"));
 
+    // Debugging
+    const lldb = b.addSystemCommand(&.{
+        "lldb"
+    });
+    const lldb_step = b.step("debug", "run the test under lldb");
+    lldb_step.dependOn(&lldb.step);
+
     b.installArtifact(exe);
 
     // Run step
