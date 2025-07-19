@@ -29,6 +29,8 @@ const Win32OffscreenBuffer = struct {
 // NOTE: Required for win32 API to convert automatically choose ? ANSI : WIDE
 pub const UNICODE = false;
 
+// TODO: Global for now
+var global_running: bool = true;
 var global_back_buffer = Win32OffscreenBuffer{
     .info = undefined,
     .memory = null,
@@ -37,9 +39,7 @@ var global_back_buffer = Win32OffscreenBuffer{
     .pitch = 0,
     .bytes_per_pixel = 0,
 };
-
-// TODO: Global for now
-var global_running: bool = true;
+var global_secondary_buffer: ?*win32.dsound.IDirectSoundBuffer = null;
 
 fn xInputGetStateStub(_: u32, _: ?*win32.xin.XINPUT_STATE) callconv(winapi) isize {
     return @intFromEnum(win32.fnd.ERROR_DEVICE_NOT_CONNECTED);
@@ -157,9 +157,9 @@ fn win32InitDSound(window: win32.fnd.HWND, samples_per_second: u32, buffer_size:
         .lpwfxFormat = &wave_format,
     };
 
-    var secondary_buffer: ?*win32.dsound.IDirectSoundBuffer = null;
+    global_secondary_buffer = null;
     if (!win32.zig.SUCCEEDED(direct_sound.CreateSoundBuffer(
-                &buffer_desc, &secondary_buffer, null))) {
+                &buffer_desc, &global_secondary_buffer, null))) {
         // TODO: Diagnostic
         std.debug.print("Failed to create secondary sound buffer!", .{}); 
         return;
@@ -372,12 +372,25 @@ pub fn wWinMain(
         null,
         instance,
         null,
-        ) orelse return 0;
+    ) orelse return 0;
 
-    win32InitDSound(window, 48000, 48000 * @sizeOf(i16) * 2);
-
+    // NOTE: Graphics test
     var x_offset: i32 = 0;
     var y_offset: i32 = 0;
+
+    // NOTE: Sound test
+    const samples_per_second: i32 = 48000;
+    const tone_hz: i32 = 256;
+    const square_wave_period: i32 = samples_per_second / tone_hz;
+    const half_square_wave_period = square_wave_period / 2;
+    const bytes_per_sample: i32 = @sizeOf(i16) * 2;
+    const secondary_buffer_size: i32 = samples_per_second * bytes_per_sample;
+    const tone_volume: i16 = 3000;
+    var running_sample_index: u32 = 0;
+
+    win32InitDSound(window, samples_per_second, secondary_buffer_size);
+    var sound_is_playing = false;
+
     while (global_running) : (x_offset += 1) {
         var message: win32.wm.MSG = undefined;
         while (win32.wm.PeekMessage(&message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
@@ -394,8 +407,8 @@ pub fn wWinMain(
             var controller_state: win32.xin.XINPUT_STATE = undefined;
             if (xInputGetState(controller_idx, &controller_state) 
                 == @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
-                // NOTE:The controller is plugged in
-                // TODO:See if controller_state.dwPacketNumber increments too rapidly
+                // NOTE: The controller is plugged in
+                // TODO: See if controller_state.dwPacketNumber increments too rapidly
                 const pad = &controller_state.Gamepad;
 
                 // const up = pad.*.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_UP;
@@ -418,7 +431,6 @@ pub fn wWinMain(
                 y_offset += stick_y >> 12;
             } else {
                 // NOTE:The controller is not available
-
             }
         }
 
@@ -429,6 +441,78 @@ pub fn wWinMain(
         _ = xInputSetState(0, &vibration);
 
         renderWeirdGradient(&global_back_buffer, x_offset, y_offset);
+
+        var play_cursor: u32 = undefined;
+        var write_cursor: u32 = undefined;
+        if (win32.zig.SUCCEEDED(global_secondary_buffer.?.*.GetCurrentPosition(
+                    &play_cursor, &write_cursor))) getpos: {
+            const byte_to_lock: u32 = running_sample_index * bytes_per_sample % secondary_buffer_size;
+            var bytes_to_write: u32 = undefined;
+            if (byte_to_lock == play_cursor) {
+                bytes_to_write = secondary_buffer_size;
+            } else if (byte_to_lock > play_cursor) {
+                bytes_to_write = @intCast(secondary_buffer_size - @as(i32, @intCast(byte_to_lock)));
+                bytes_to_write += play_cursor;
+            } else {
+                bytes_to_write = play_cursor - byte_to_lock;
+            }
+
+            var region_1: ?*anyopaque = null;
+            var region_1_size: u32 = undefined;
+            var region_2: ?*anyopaque = null;
+            var region_2_size: u32 = undefined;
+
+            if (!win32.zig.SUCCEEDED(global_secondary_buffer.?.*.Lock(
+                byte_to_lock, bytes_to_write,
+                &region_1, &region_1_size, 
+                &region_2, &region_2_size,
+                0,
+            ))) break :getpos;
+            
+
+            var sample_out: [*] align(1) i16 = @alignCast(@ptrCast(region_1.?));
+            if (region_1 != null) {
+                const region_1_sample_count: usize = @divFloor(region_1_size, bytes_per_sample);
+                for (0..region_1_sample_count) |_| {
+                    const sample_value: i16 = if ((@divTrunc(running_sample_index, half_square_wave_period) % 2) == 1)
+                        tone_volume else -tone_volume;
+
+                    sample_out[0] = sample_value;
+                    sample_out += 1;
+                    sample_out[0] = sample_value;
+                    sample_out += 1;
+
+                    running_sample_index += 1;
+                }
+            }
+
+
+            if (region_2 != null) {
+                sample_out = @alignCast(@ptrCast(region_2));
+                const region_2_sample_count: usize = @divTrunc(region_2_size, bytes_per_sample);
+                for (0..region_2_sample_count) |_| {
+                    const sample_value: i16 = if ((@divTrunc(running_sample_index, half_square_wave_period) % 2) == 0)
+                        tone_volume else -tone_volume;
+
+                    sample_out[0] = sample_value;
+                    sample_out += 1;
+                    sample_out[0] = sample_value;
+                    sample_out += 1;
+
+                    running_sample_index += 1;
+                }
+            }
+
+            _ = global_secondary_buffer.?.*.Unlock(
+                region_1, region_1_size, 
+                region_2, region_2_size,
+            );
+        }
+
+        if (!sound_is_playing) {
+            _ = global_secondary_buffer.?.*.Play(0, 0, win32.dsound.DSBPLAY_LOOPING);
+            sound_is_playing = true;
+        }
 
         const device_ctx = win32.gdi.GetDC(window) orelse return 0;
         const dimensions = win32GetWindowDimension(window);
