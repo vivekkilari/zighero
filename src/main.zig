@@ -15,6 +15,7 @@ const win32 = struct {
     const audio = root.media.audio;
     const dsound = audio.direct_sound;
     const com = root.system.com;
+    const perf = root.system.performance;
 };
 
 const Win32OffscreenBuffer = struct {
@@ -435,12 +436,27 @@ fn win32FillSoundBuffer(
     );
 }
 
+inline fn rdtsc() u64 {
+    var hi: u32 = 0;
+    var low: u32 = 0;
+    asm (
+        \\rdtsc
+        : [low] "={eax}" (low),
+          [hi] "={edx}" (hi),
+    );
+    return (@as(u64, hi) << 32) | @as(u64, low);
+}
+
 pub fn wWinMain(
     instance: ?win32.fnd.HINSTANCE,
     _: ?win32.fnd.HINSTANCE,
     _: [*:0]u16,
     _: u32,
 ) callconv(winapi) c_int {
+    var perf_count_frequency_result: win32.fnd.LARGE_INTEGER = undefined;
+    _ = win32.perf.QueryPerformanceFrequency(&perf_count_frequency_result);
+    const perf_count_frequency = perf_count_frequency_result.QuadPart;
+
     const window_class = win32.wm.WNDCLASS{
         .style = .{},
         .lpfnWndProc = win32WindowCallback,
@@ -508,6 +524,11 @@ pub fn wWinMain(
     win32FillSoundBuffer(&sound_output, 0, 
         sound_output.latency_sample_count * sound_output.bytes_per_sample);
     _ = global_secondary_buffer.?.Play(0, 0, win32.dsound.DSBPLAY_LOOPING);
+
+
+    var last_counter: win32.fnd.LARGE_INTEGER = undefined;
+    _ = win32.perf.QueryPerformanceCounter(&last_counter);
+    var last_cycle_count: u64 = rdtsc();
 
     while (global_running) : (x_offset += 1) {
         var message: win32.wm.MSG = undefined;
@@ -605,6 +626,23 @@ pub fn wWinMain(
             dimensions.height,
         );
         _ = win32.gdi.ReleaseDC(window, device_ctx);
+
+        const end_cycle_count: u64 = rdtsc();
+
+        var end_counter: win32.fnd.LARGE_INTEGER = undefined;
+        _ = win32.perf.QueryPerformanceCounter(&end_counter);
+
+        const cycles_elapsed = end_cycle_count - last_cycle_count;
+        const counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
+        const ms_per_frame: f32 = @as(f32, @floatFromInt((1000 * counter_elapsed))) / 
+            @as(f32, @floatFromInt(perf_count_frequency));
+        const fps: f32 = @floatFromInt(@divTrunc(perf_count_frequency, counter_elapsed));
+        const mc_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+
+        std.debug.print("{d: >10}ms/f, {d: >10}f/s, {d: >10}mc/f\n", .{ms_per_frame, fps, mc_per_frame});
+
+        last_counter = end_counter;
+        last_cycle_count = end_cycle_count;
     }
 
     return 0;
