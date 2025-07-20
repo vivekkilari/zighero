@@ -1,4 +1,24 @@
+// TODO: THIS IS NOT A FINAL PLATFORM LAYER!!!
+// - Saved game locations
+// - Getting a handle to our own executable file
+// - Asset loading path
+// - Threading (launch a thread)
+// - Raw Input (support for multiple keyboards)
+// - Sleep/timeBeginPeriod
+// - ClipCursor() (for multimontior support)
+// - Fullscreen support
+// - WM_SETCURSOR (control cursor visibility)
+// - QueryCancelAutoplay
+// - WM_ACTIVATEAPP (for when we are not the active application)
+// - Blit speed improvements (BitBlt)
+// - Hardward acceleration (OpenGL or Direct3D or BOTH??)
+// - GetKeyboardLayout (for Fr*nch keyboards, international WASD support)
+//
+// Just a partial list of stuf!!
+
 const std = @import("std");
+const handmade = @import("handmade.zig");
+
 const winapi = std.os.windows.WINAPI;
 const win32 = struct {
     const root = @import("win32");
@@ -199,41 +219,6 @@ fn win32GetWindowDimension(window: win32.fnd.HWND) struct {
         .width = rect.right - rect.left,
         .height = rect.bottom - rect.top,
     };
-}
-
-fn renderWeirdGradient(
-    buffer: *Win32OffscreenBuffer, 
-    x_offset: i32,
-    y_offset: i32,
-) void {
-    var row: [*]u8 = @as(?[*]u8, @ptrCast(buffer.memory)) orelse return;
-
-    // NOTE: Written as bgrx due to endianness flipping
-    const rgb = packed struct(u32) {
-        b: u8 = 0,
-        g: u8 = 0,
-        r: u8 = 0,
-        _: u8 = 0,
-    };
-
-    const b_height: usize = @intCast(buffer.height);
-    const b_width: usize = @intCast(buffer.width);
-
-    for (0..b_height) |y| {
-        var pixel: [*]rgb = @ptrCast(@alignCast(row));
-        for (1..b_width) |x| {
-            const blue: u32 = @bitCast(@as(i32, @intCast(x)) + x_offset);
-            const green: u32 = @bitCast(@as(i32, @intCast(y)) + y_offset);
-
-            pixel[x] = .{
-                .b = @truncate(blue),
-                .g = @truncate(green),
-                .r = 0,
-            };
-        }
-
-        row += @intCast(buffer.pitch);
-    }
 }
 
 fn win32ResizeDIBSection(
@@ -565,7 +550,6 @@ pub fn wWinMain(
                 // const x_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_X;
                 // const y_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_Y;
 
-
                 const stick_x = pad.sThumbLX;
                 const stick_y = pad.sThumbLY;
 
@@ -588,7 +572,14 @@ pub fn wWinMain(
         };
         _ = xInputSetState(0, &vibration);
 
-        renderWeirdGradient(&global_back_buffer, x_offset, y_offset);
+        var buffer = handmade.GameOffscreenBuffer{
+            .memory = global_back_buffer.memory,
+            .width = global_back_buffer.width,
+            .height  = global_back_buffer.height,
+            .pitch = global_back_buffer.pitch,
+        };
+
+        handmade.gameUpdateAndRender(&buffer, x_offset, y_offset);
 
         var play_cursor: u32 = undefined;
         var write_cursor: u32 = undefined;
@@ -605,8 +596,6 @@ pub fn wWinMain(
 
             var bytes_to_write: u32 = undefined;
 
-            // TODO: Change this to using a lower latency offset from the
-            // playcursour when we actually start having sound effects.
             if (byte_to_lock > target_cursor) {
                 bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
                 bytes_to_write += target_cursor;
@@ -639,7 +628,10 @@ pub fn wWinMain(
         const fps: f32 = @floatFromInt(@divTrunc(perf_count_frequency, counter_elapsed));
         const mc_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
 
-        std.debug.print("{d: >10}ms/f, {d: >10}f/s, {d: >10}mc/f\n", .{ms_per_frame, fps, mc_per_frame});
+        _ = ms_per_frame; 
+        _ = fps;
+        _ = mc_per_frame;
+        // std.debug.print("{d: >10}ms/f, {d: >10}f/s, {d: >10}mc/f\n", .{ms_per_frame, fps, mc_per_frame});
 
         last_counter = end_counter;
         last_cycle_count = end_cycle_count;
