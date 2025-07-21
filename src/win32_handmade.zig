@@ -38,6 +38,18 @@ const win32 = struct {
     const perf = root.system.performance;
 };
 
+// NOTE: Required for win32 API to convert automatically choose ? ANSI : WIDE
+pub const UNICODE = false;
+
+const Win32SoundOutput = struct {
+    samples_per_second: u32,
+    bytes_per_sample: u32,
+    secondary_buffer_size: u32,
+    running_sample_index: u32,
+    latency_sample_count: u32,
+    t_sine: f32,
+};
+
 const Win32OffscreenBuffer = struct {
     info: win32.gdi.BITMAPINFO,
     memory: ?*anyopaque,
@@ -46,9 +58,6 @@ const Win32OffscreenBuffer = struct {
     pitch: i32,
     bytes_per_pixel: u4,
 };
-
-// NOTE: Required for win32 API to convert automatically choose ? ANSI : WIDE
-pub const UNICODE = false;
 
 // TODO: Global for now
 var global_running: bool = true;
@@ -60,26 +69,40 @@ var global_back_buffer = Win32OffscreenBuffer{
     .pitch = 0,
     .bytes_per_pixel = 0,
 };
+
 var global_secondary_buffer: ?*win32.dsound.IDirectSoundBuffer = null;
 
-fn xInputGetStateStub(
-    _: u32, 
-    _: ?*win32.xin.XINPUT_STATE,
-) callconv(winapi) isize {
+var xInputGetState: *const fn (u32, ?*win32.xin.XINPUT_STATE) callconv(winapi) isize 
+    = &xInputGetStateStub;
+var xInputSetState: *const fn (u32, ?*win32.xin.XINPUT_VIBRATION) callconv(winapi) isize 
+    = &xInputSetStateStub;
+
+var win32DirectSoundCreate: *const fn (
+    pcGuidDevice: ?*const win32.zig.Guid, 
+    ppDS: ?*?*win32.dsound.IDirectSound,
+    pUnkOuter: ?*win32.com.IUnknown,
+) callconv(winapi) win32.fnd.HRESULT = undefined;
+
+inline fn rdtsc() u64 {
+    var hi: u32 = 0;
+    var low: u32 = 0;
+    asm (
+        \\rdtsc
+        : [low] "={eax}" (low),
+          [hi] "={edx}" (hi),
+    );
+    return (@as(u64, hi) << 32) | @as(u64, low);
+}
+
+fn xInputGetStateStub(_: u32, _: ?*win32.xin.XINPUT_STATE) 
+    callconv(winapi) isize {
     return @intFromEnum(win32.fnd.ERROR_DEVICE_NOT_CONNECTED);
 }
 
-fn xInputSetStateStub(
-    _: u32, 
-    _: ?*win32.xin.XINPUT_VIBRATION,
-) callconv(winapi) isize {
+fn xInputSetStateStub(_: u32, _: ?*win32.xin.XINPUT_VIBRATION) 
+    callconv(winapi) isize {
     return @intFromEnum(win32.fnd.ERROR_DEVICE_NOT_CONNECTED);
 }
-
-var xInputGetState: *const fn (u32, ?*win32.xin.XINPUT_STATE) 
-    callconv(winapi) isize = &xInputGetStateStub;
-var xInputSetState: *const fn (u32, ?*win32.xin.XINPUT_VIBRATION) 
-    callconv(winapi) isize = &xInputSetStateStub;
 
 fn win32LoadXInput() void {
     const library = win32.lib.LoadLibrary("xinput1_4.dll") orelse l: {
@@ -101,17 +124,7 @@ fn win32LoadXInput() void {
     }
 }
 
-var win32DirectSoundCreate: *const fn (
-    pcGuidDevice: ?*const win32.zig.Guid, 
-    ppDS: ?*?*win32.dsound.IDirectSound,
-    pUnkOuter: ?*win32.com.IUnknown,
-) callconv(winapi) win32.fnd.HRESULT = undefined;
-
-fn win32InitDSound(
-    window: win32.fnd.HWND, 
-    samples_per_second: u32,
-    buffer_size: u32,
-) void {
+fn win32InitDSound(window: win32.fnd.HWND, samples_per_second: u32, buffer_size: u32) void {
     // NOTE: Load the library
     const lib = win32.lib.LoadLibrary("dsound.dll") orelse {
         // TODO: Diagnostic
@@ -130,8 +143,8 @@ fn win32InitDSound(
 
     // NOTE: Get a DirectSound object
     var direct_sound_opt: ?*win32.dsound.IDirectSound = null;
-    if (!win32.zig.SUCCEEDED(win32DirectSoundCreate(
-                null, &direct_sound_opt, null)) or direct_sound_opt == null) {
+    if (!win32.zig.SUCCEEDED( win32DirectSoundCreate(null, &direct_sound_opt, null)) or 
+            direct_sound_opt == null) {
         // TODO: Diagnostic
         std.debug.print("Failed to create direct sound object!", .{});
         return;
@@ -146,11 +159,8 @@ fn win32InitDSound(
         .nAvgBytesPerSec = undefined,
         .cbSize = 0,
     };
-    wave_format.nBlockAlign = 
-        (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
-    wave_format.nAvgBytesPerSec = 
-        wave_format.nSamplesPerSec * wave_format.nBlockAlign;
-
+    wave_format.nBlockAlign = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
+    wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
 
     var direct_sound: *win32.dsound.IDirectSound = direct_sound_opt.?;
     if (win32.zig.SUCCEEDED(direct_sound.SetCooperativeLevel(
@@ -161,8 +171,7 @@ fn win32InitDSound(
             .dwFlags = win32.dsound.DSBCAPS_PRIMARYBUFFER,
             .dwBufferBytes = 0,
             .dwReserved = 0,
-            .guid3DAlgorithm = win32.zig.Guid
-                .initString("00000000-0000-0000-0000-000000000000"),
+            .guid3DAlgorithm = win32.zig.Guid.initString("00000000-0000-0000-0000-000000000000"),
             .lpwfxFormat = null,
         };
 
@@ -180,7 +189,6 @@ fn win32InitDSound(
             std.debug.print("Failed to set primary sound buffer format!", .{}); 
             break :pb;
         }
-        // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         // NOTE: The format has finally been set!
     } else {
         // TODO: Diagnostic
@@ -194,8 +202,7 @@ fn win32InitDSound(
         .dwFlags = 0,
         .dwBufferBytes = buffer_size,
         .dwReserved = 0,
-        .guid3DAlgorithm = win32.zig.Guid
-            .initString("00000000-0000-0000-0000-000000000000"),
+        .guid3DAlgorithm = win32.zig.Guid.initString("00000000-0000-0000-0000-000000000000"),
         .lpwfxFormat = &wave_format,
     };
 
@@ -208,10 +215,7 @@ fn win32InitDSound(
     }
 }
 
-fn win32GetWindowDimension(window: win32.fnd.HWND) struct {
-    width: i32, 
-    height: i32 
-} {
+fn win32GetWindowDimension(window: win32.fnd.HWND) struct { width: i32, height: i32 } {
     var rect: win32.fnd.RECT = undefined;
     _ = win32.wm.GetClientRect(window, &rect);
 
@@ -221,11 +225,7 @@ fn win32GetWindowDimension(window: win32.fnd.HWND) struct {
     };
 }
 
-fn win32ResizeDIBSection(
-    buffer: *Win32OffscreenBuffer,
-    width: i32,
-    height: i32,
-) void {
+fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32) void {
     if (buffer.memory != null) {
         _ = win32.mem.VirtualFree(buffer.memory, 0, win32.mem.MEM_RELEASE);
     }
@@ -283,11 +283,8 @@ fn win32WindowCallback(
     var result: win32.fnd.LRESULT = undefined;
 
     msg: switch (message) {
-        win32.wm.WM_CLOSE, win32.wm.WM_DESTROY => {
-            global_running = false;
-        },
-        win32.wm.WM_ACTIVATEAPP => 
-            win32.dbg.OutputDebugString("WM_ACTIVATEAPP\n"),
+        win32.wm.WM_CLOSE, win32.wm.WM_DESTROY => global_running = false,
+        win32.wm.WM_ACTIVATEAPP => win32.dbg.OutputDebugString("WM_ACTIVATEAPP\n"),
         win32.wm.WM_SYSKEYDOWN, 
         win32.wm.WM_SYSKEYUP,
         win32.wm.WM_KEYDOWN,
@@ -324,7 +321,6 @@ fn win32WindowCallback(
                 },
                 else => {}
             }
-
         },
         win32.wm.WM_PAINT => {
             var paint: win32.gdi.PAINTSTRUCT = undefined;
@@ -340,24 +336,11 @@ fn win32WindowCallback(
 
             _ = win32.gdi.EndPaint(window, &paint);
         },
-        else => 
-            result = win32.wm.DefWindowProc(window, message, w_param, l_param),
+        else => result = win32.wm.DefWindowProc(window, message, w_param, l_param),
     }
 
-         return result;
+    return result;
 }
-
-const Win32SoundOutput = struct {
-    samples_per_second: u32,
-    wave_period: u32,
-    bytes_per_sample: u32,
-    secondary_buffer_size: u32,
-    running_sample_index: u32,
-    latency_sample_count: u32,
-    t_sine: f32,
-    tone_hz: i32,
-    tone_volume: i16,
-};
 
 fn win32ClearSoundBuffer(sound_output: *Win32SoundOutput) void {
     var region_1: ?*anyopaque = null;
@@ -451,15 +434,14 @@ fn win32FillSoundBuffer(
     );
 }
 
-inline fn rdtsc() u64 {
-    var hi: u32 = 0;
-    var low: u32 = 0;
-    asm (
-        \\rdtsc
-        : [low] "={eax}" (low),
-          [hi] "={edx}" (hi),
-    );
-    return (@as(u64, hi) << 32) | @as(u64, low);
+fn win32ProcessXInputDigitalButton(
+    x_input_button_state: u16,
+    old_state: *handmade.GameButtonState, 
+    button_bit: u32,
+    new_state: *handmade.GameButtonState,
+) void {
+    new_state.ended_down = ((x_input_button_state & button_bit) == button_bit);
+    new_state.half_transition_count = if (old_state.ended_down != new_state.ended_down) 1 else 0;
 }
 
 pub fn wWinMain(
@@ -514,38 +496,30 @@ pub fn wWinMain(
         null,
     ) orelse return 0;
 
-    // NOTE: Graphics test
-    var x_offset: i32 = 0;
-    var y_offset: i32 = 0;
-
     var sound_output: Win32SoundOutput = undefined;
     sound_output.samples_per_second = 48000;
-    sound_output.tone_hz = 256;
-    sound_output.wave_period = 
-        sound_output.samples_per_second / @as(u32, @intCast(sound_output.tone_hz));
     sound_output.bytes_per_sample = @sizeOf(i16) * 2;
     sound_output.secondary_buffer_size = 
         sound_output.samples_per_second * sound_output.bytes_per_sample;
     sound_output.latency_sample_count = sound_output.samples_per_second / 15;
     sound_output.running_sample_index = 0;
     sound_output.t_sine = 0;
-    sound_output.tone_volume = 3000;
 
-    win32InitDSound(
-        window, 
-        sound_output.samples_per_second,
-        sound_output.secondary_buffer_size,
-    );
+    win32InitDSound(window, sound_output.samples_per_second, sound_output.secondary_buffer_size);
     win32ClearSoundBuffer(&sound_output);
     _ = global_secondary_buffer.?.Play(0, 0, win32.dsound.DSBPLAY_LOOPING);
 
+    var input: [2]handmade.GameInput = undefined;
+    var new_input = &input[0];
+    var old_input = &input[1];
 
     var last_counter: win32.fnd.LARGE_INTEGER = undefined;
     _ = win32.perf.QueryPerformanceCounter(&last_counter);
     var last_cycle_count: u64 = rdtsc();
 
-    while (global_running) : (x_offset += 1) {
+    while (global_running) {
         var message: win32.wm.MSG = undefined;
+
         while (win32.wm.PeekMessage(
                 &message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
             if (message.message == win32.wm.WM_QUIT) {
@@ -557,39 +531,83 @@ pub fn wWinMain(
         }
 
         var controller_idx: u32 = 0;
-        while(controller_idx < win32.xin.XUSER_MAX_COUNT) : 
+        const max_controller_count = if (win32.xin.XUSER_MAX_COUNT > new_input.controllers.len) 
+                new_input.controllers.len else win32.xin.XUSER_MAX_COUNT;
+        while(controller_idx < max_controller_count) : 
             (controller_idx += 1) {
+            const old_controller = &old_input.controllers[controller_idx];
+            const new_controller = &old_input.controllers[controller_idx];
+
             var controller_state: win32.xin.XINPUT_STATE = undefined;
-            if (xInputGetState(controller_idx, &controller_state) 
-                == @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
+            if (xInputGetState(controller_idx, &controller_state) == 
+                @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
                 // NOTE: The controller is plugged in
                 // TODO: See if controller_state.dwPacketNumber increments too rapidly
                 const pad = &controller_state.Gamepad;
 
+                // TODO: DPAD
                 // const up = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_UP;
                 // const down = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_DOWN;
                 // const left = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_LEFT;
                 // const right = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_RIGHT;
+
+                new_controller.start_x = old_controller.end_x;
+                new_controller.start_y = old_controller.end_y;
+                new_controller.is_analog = true;
+
+                var x: f32 = undefined;
+                var y: f32 = undefined;
+
+                // TODO: Collapse to single function
+                if (pad.sThumbLX < 0) {
+                    x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32768.0;
+                } else {
+                    x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32767.0;
+                }
+                new_controller.min_x, new_controller.max_x, new_controller.end_x = .{x, x, x};
+
+                if (pad.sThumbLY < 0) {
+                    y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32768.0;
+                } else {
+                    y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32767.0;
+                }
+                new_controller.min_y, new_controller.max_y, new_controller.end_y = .{y, y, y};
+
+                // const stick_x: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLX)) / x);
+                // const stick_y: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLY)) / y);
+
+                const xin = win32.xin;
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.down,
+                    xin.XINPUT_GAMEPAD_A, &new_controller.buttons.names.down,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right,
+                    xin.XINPUT_GAMEPAD_B, &new_controller.buttons.names.right,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left,
+                    xin.XINPUT_GAMEPAD_X, &new_controller.buttons.names.left,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.up,
+                    xin.XINPUT_GAMEPAD_Y, &new_controller.buttons.names.up,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left_shoulder,
+                    xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.buttons.names.left_shoulder,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right_shoulder,
+                    xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.buttons.names.right_shoulder,
+                );
+
                 // const start = pad.wButtons & win32.xin.XINPUT_GAMEPAD_START;
                 // const back = pad.wButtons & win32.xin.XINPUT_GAMEPAD_BACK;
-                // const left_shoulder = pad.wButtons & win32.xin.XINPUT_GAMEPAD_LEFT_SHOULDER;
-                // const right_shoulder = pad.wButtons & win32.xin.XINPUT_GAMEPAD_RIGHT_SHOULDER;
-                // const a_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_A;
-                // const b_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_B;
-                // const x_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_X;
-                // const y_button = pad.wButtons & win32.xin.XINPUT_GAMEPAD_Y;
-
-                const stick_x = pad.sThumbLX;
-                const stick_y = pad.sThumbLY;
 
                 // TODO: Will do deadzone handling later
-
-                x_offset += @divTrunc(stick_x, @as(i16, 4096));
-                y_offset += @divTrunc(stick_y, @as(i16, 4096));
-
-                sound_output.tone_hz = 512 + @as(i32, @intFromFloat(256 * (@as(f32, @floatFromInt(stick_y)) / 30000.0)));
-                sound_output.wave_period = 
-                    sound_output.samples_per_second / @as(u32, @intCast(sound_output.tone_hz));
+                // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+                // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
             } else {
                 // NOTE:The controller is not available
             }
@@ -603,12 +621,11 @@ pub fn wWinMain(
         var sound_is_valid = false;
         // TODO: Tighten up sound logic so that we know where we should be 
         // writing to and can anticipate the time spent in the game update
-        if (win32.zig.SUCCEEDED(global_secondary_buffer.?.GetCurrentPosition(
-                    &play_cursor, &write_cursor))) {
+        if (win32.zig.SUCCEEDED(
+                global_secondary_buffer.?.GetCurrentPosition(&play_cursor, &write_cursor))) {
             sound_is_valid = true;
 
-            byte_to_lock = 
-                (sound_output.running_sample_index * sound_output.bytes_per_sample) % 
+            byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % 
                 sound_output.secondary_buffer_size;
 
             target_cursor = (play_cursor + 
@@ -623,9 +640,10 @@ pub fn wWinMain(
             }
         }
 
-        const samples: [*]i16 = @alignCast(@ptrCast(win32.mem.VirtualAlloc(null, sound_output.secondary_buffer_size, 
-            .{ .COMMIT = 1, .RESERVE = 1 }, 
-            win32.mem.PAGE_READWRITE)));
+        const samples: [*]i16 = @alignCast(@ptrCast(win32.mem.VirtualAlloc(
+                    null, sound_output.secondary_buffer_size,
+                    .{ .COMMIT = 1, .RESERVE = 1 }, win32.mem.PAGE_READWRITE))
+        );
         var sound_buffer = handmade.GameSoundOutputBuffer {
             .samples_per_second = sound_output.samples_per_second,
             .sample_count = bytes_to_write / sound_output.bytes_per_sample,
@@ -639,7 +657,7 @@ pub fn wWinMain(
             .pitch = global_back_buffer.pitch,
         };
 
-        handmade.gameUpdateAndRender(&buffer, x_offset, y_offset, &sound_buffer, sound_output.tone_hz);
+        handmade.gameUpdateAndRender(new_input, &buffer, &sound_buffer);
 
         if (sound_is_valid) {
             win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
@@ -674,6 +692,10 @@ pub fn wWinMain(
 
         last_counter = end_counter;
         last_cycle_count = end_cycle_count;
+
+        const temp = new_input;
+        new_input = old_input;
+        old_input = temp;
     }
 
     return 0;

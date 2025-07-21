@@ -19,6 +19,43 @@ pub const GameSoundOutputBuffer = struct {
     samples: [*]i16,
 };
 
+pub const GameButtonState = struct {
+    half_transition_count: i32,
+    ended_down: bool,
+};
+
+pub const GameControllerInput = struct {
+    is_analog: bool,
+
+    start_x: f32,
+    start_y: f32,
+
+    min_x: f32,
+    min_y: f32,
+
+    max_x: f32,
+    max_y: f32,
+
+    end_x: f32,
+    end_y: f32,
+
+    buttons: union {
+        array: [6]GameButtonState,
+        names: struct {
+            up: GameButtonState,
+            down: GameButtonState,
+            left: GameButtonState,
+            right: GameButtonState,
+            left_shoulder: GameButtonState,
+            right_shoulder: GameButtonState,
+        }
+    }
+};
+
+pub const GameInput = struct {
+    controllers: [4]GameControllerInput,
+};
+
 pub fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const sound_output = struct {
         var t_sine: f32 = undefined;
@@ -79,13 +116,36 @@ fn renderWeirdGradient(
 }
 
 pub fn gameUpdateAndRender(
+    input: *GameInput,
     buffer: *GameOffscreenBuffer, 
-    blue_offset: i32, 
-    green_offset: i32,
     sound_buffer: *GameSoundOutputBuffer,
-    tone_hz: i32,
 ) void {
+    const local = struct{
+        var blue_offset: i32 = 0; 
+        var green_offset: i32 = 0;
+        var tone_hz: i32 = 256;
+    };
+
+    const input_0 = input.controllers[0];
+    if (input_0.is_analog) {
+        local.blue_offset += @intFromFloat(4.0 * input_0.end_x);
+        local.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input_0.end_y));
+    } else {
+
+    }
+
+    if (input_0.buttons.names.down.ended_down) {
+        local.green_offset += 1;
+    }
+
+
     // TODO: Allow sample offsets here for more robust platform options
-    gameOutputSound(sound_buffer, tone_hz);
-    renderWeirdGradient(buffer, blue_offset, green_offset);
+    gameOutputSound(sound_buffer, local.tone_hz);
+    renderWeirdGradient(buffer, local.blue_offset, local.green_offset);
 }
+
+
+
+
+
+
