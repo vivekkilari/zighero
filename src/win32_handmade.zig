@@ -359,10 +359,46 @@ const Win32SoundOutput = struct {
     tone_volume: i16,
 };
 
+fn win32ClearSoundBuffer(sound_output: *Win32SoundOutput) void {
+    var region_1: ?*anyopaque = null;
+    var region_1_size: u32 = undefined;
+    var region_2: ?*anyopaque = null;
+    var region_2_size: u32 = undefined;
+
+    if (!win32.zig.SUCCEEDED(global_secondary_buffer.?.Lock(
+                0, sound_output.secondary_buffer_size,
+                &region_1, &region_1_size, 
+                &region_2, &region_2_size,
+                0,
+    ))) return;
+
+    var dest_sample: [*] i8 = undefined;
+    if (region_1) |region| {
+        dest_sample = @alignCast(@ptrCast(region));
+        for (0..region_1_size) |_| {
+            dest_sample[0] = 0;
+            dest_sample += 1;
+        }
+    }
+
+    if (region_2) |region| {
+        dest_sample = @alignCast(@ptrCast(region));
+        for (0..region_2_size) |_| {
+            dest_sample[0] = 0;
+            dest_sample += 1;
+        }
+    }
+
+    _ = global_secondary_buffer.?.Unlock(
+        region_1, region_1_size, 
+        region_2, region_2_size,
+    );
+}
 fn win32FillSoundBuffer(
     sound_output: *Win32SoundOutput,
     byte_to_lock: u32,
     bytes_to_write: u32,
+    source_buffer: *handmade.GameSoundOutputBuffer,
 ) void {
     var region_1: ?*anyopaque = null;
     var region_1_size: u32 = undefined;
@@ -376,41 +412,35 @@ fn win32FillSoundBuffer(
                 0,
     ))) return;
 
+    var source_sample = source_buffer.samples;
+    var dest_sample: [*] align(1) i16 = undefined;
     if (region_1) |region| {
-        var sample_out: [*] align(1) i16 = @alignCast(@ptrCast(region));
-        const region_1_sample_count: usize = region_1_size / sound_output.bytes_per_sample;
-        for (0..region_1_sample_count) |_| {
-            const sine_value: f32 = @sin(sound_output.t_sine);
-            const sample_value: i16 = @intFromFloat(
-                sine_value * @as(f32, @floatFromInt(sound_output.tone_volume)));
+        dest_sample = @alignCast(@ptrCast(region));
+        const region_size: usize = region_1_size / sound_output.bytes_per_sample;
+        for (0..region_size) |_| {
+            dest_sample[0] = source_sample[0];
+            dest_sample += 1;
+            source_sample += 1;
+            dest_sample[0] = source_sample[0];
+            dest_sample += 1;
+            source_sample += 1;
 
-            sample_out[0] = sample_value;
-            sample_out += 1;
-            sample_out[0] = sample_value;
-            sample_out += 1;
-
-            sound_output.t_sine += std.math.tau /
-                @as(f32, @floatFromInt(sound_output.wave_period));
             sound_output.running_sample_index += 1;
         }
     }
 
 
     if (region_2) |region| {
-        var sample_out: [*] align(1) i16 = @alignCast(@ptrCast(region));
-        const region_2_sample_count: usize = region_2_size / sound_output.bytes_per_sample;
-        for (0..region_2_sample_count) |_| {
-            const sine_value: f32 = @sin(sound_output.t_sine);
-            const sample_value: i16 = @intFromFloat(sine_value * 
-                @as(f32, @floatFromInt(sound_output.tone_volume)));
+        dest_sample = @alignCast(@ptrCast(region));
+        const region_size: usize = region_2_size / sound_output.bytes_per_sample;
+        for (0..region_size) |_| {
+            dest_sample[0] = source_sample[0];
+            dest_sample += 1;
+            source_sample += 1;
+            dest_sample[0] = source_sample[0];
+            dest_sample += 1;
+            source_sample += 1;
 
-            sample_out[0] = sample_value;
-            sample_out += 1;
-            sample_out[0] = sample_value;
-            sample_out += 1;
-
-            sound_output.t_sine += std.math.tau /
-                @as(f32, @floatFromInt(sound_output.wave_period));
             sound_output.running_sample_index += 1;
         }
     }
@@ -506,8 +536,7 @@ pub fn wWinMain(
         sound_output.samples_per_second,
         sound_output.secondary_buffer_size,
     );
-    win32FillSoundBuffer(&sound_output, 0, 
-        sound_output.latency_sample_count * sound_output.bytes_per_sample);
+    win32ClearSoundBuffer(&sound_output);
     _ = global_secondary_buffer.?.Play(0, 0, win32.dsound.DSBPLAY_LOOPING);
 
 
@@ -566,11 +595,42 @@ pub fn wWinMain(
             }
         }
 
-        var vibration: win32.xin.XINPUT_VIBRATION = .{
-            .wLeftMotorSpeed = 60000,
-            .wRightMotorSpeed = 60000,
+        var byte_to_lock: u32 = undefined;
+        var target_cursor: u32 = undefined;
+        var bytes_to_write: u32 = undefined;
+        var play_cursor: u32 = undefined;
+        var write_cursor: u32 = undefined;
+        var sound_is_valid = false;
+        // TODO: Tighten up sound logic so that we know where we should be 
+        // writing to and can anticipate the time spent in the game update
+        if (win32.zig.SUCCEEDED(global_secondary_buffer.?.GetCurrentPosition(
+                    &play_cursor, &write_cursor))) {
+            sound_is_valid = true;
+
+            byte_to_lock = 
+                (sound_output.running_sample_index * sound_output.bytes_per_sample) % 
+                sound_output.secondary_buffer_size;
+
+            target_cursor = (play_cursor + 
+                (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % 
+                sound_output.secondary_buffer_size;
+
+            if (byte_to_lock > target_cursor) {
+                bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
+                bytes_to_write += target_cursor;
+            } else {
+                bytes_to_write = target_cursor - byte_to_lock;
+            }
+        }
+
+        const samples: [*]i16 = @alignCast(@ptrCast(win32.mem.VirtualAlloc(null, sound_output.secondary_buffer_size, 
+            .{ .COMMIT = 1, .RESERVE = 1 }, 
+            win32.mem.PAGE_READWRITE)));
+        var sound_buffer = handmade.GameSoundOutputBuffer {
+            .samples_per_second = sound_output.samples_per_second,
+            .sample_count = bytes_to_write / sound_output.bytes_per_sample,
+            .samples = samples
         };
-        _ = xInputSetState(0, &vibration);
 
         var buffer = handmade.GameOffscreenBuffer{
             .memory = global_back_buffer.memory,
@@ -579,31 +639,10 @@ pub fn wWinMain(
             .pitch = global_back_buffer.pitch,
         };
 
-        handmade.gameUpdateAndRender(&buffer, x_offset, y_offset);
+        handmade.gameUpdateAndRender(&buffer, x_offset, y_offset, &sound_buffer, sound_output.tone_hz);
 
-        var play_cursor: u32 = undefined;
-        var write_cursor: u32 = undefined;
-        if (win32.zig.SUCCEEDED(global_secondary_buffer.?.GetCurrentPosition(
-                    &play_cursor, &write_cursor))) {
-
-            const byte_to_lock = 
-                (sound_output.running_sample_index * sound_output.bytes_per_sample) % 
-                sound_output.secondary_buffer_size;
-
-            const target_cursor = (play_cursor + 
-                (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % 
-                sound_output.secondary_buffer_size;
-
-            var bytes_to_write: u32 = undefined;
-
-            if (byte_to_lock > target_cursor) {
-                bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
-                bytes_to_write += target_cursor;
-            } else {
-                bytes_to_write = target_cursor - byte_to_lock;
-            }
-
-            win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write);
+        if (sound_is_valid) {
+            win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
         }
 
         const device_ctx = win32.gdi.GetDC(window) orelse return 0;
