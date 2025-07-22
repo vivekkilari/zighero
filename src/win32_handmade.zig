@@ -17,6 +17,7 @@
 // Just a partial list of stuf!!
 
 const std = @import("std");
+const builtin = @import("builtin");
 const handmade = @import("handmade.zig");
 
 const winapi = std.os.windows.WINAPI;
@@ -494,7 +495,7 @@ pub fn wWinMain(
         null,
         instance,
         null,
-    ) orelse return 0;
+        ) orelse return 0;
 
     var sound_output: Win32SoundOutput = undefined;
     sound_output.samples_per_second = 48000;
@@ -508,6 +509,35 @@ pub fn wWinMain(
     win32InitDSound(window, sound_output.samples_per_second, sound_output.secondary_buffer_size);
     win32ClearSoundBuffer(&sound_output);
     _ = global_secondary_buffer.?.Play(0, 0, win32.dsound.DSBPLAY_LOOPING);
+
+    const samples: [*]i16 = @alignCast(@ptrCast(win32.mem.VirtualAlloc(
+        null, sound_output.secondary_buffer_size,
+        .{ .COMMIT = 1, .RESERVE = 1 }, win32.mem.PAGE_READWRITE) orelse {
+        // TODO: Diagnostic
+        return 0;
+    }));
+
+    const base_address: *allowzero anyopaque = if(builtin.mode == .Debug)
+        @ptrFromInt(handmade.terabytes(2)) else @ptrFromInt(0);
+    
+    var game_memory: handmade.GameMemory = undefined;
+    game_memory.permanent_storage_size = handmade.megabytes(64);
+    game_memory.transient_storage_size = handmade.gigabytes(4);
+
+    const total_size = game_memory.permanent_storage_size + 
+        game_memory.transient_storage_size;
+    game_memory.permanent_storage = win32.mem.VirtualAlloc(
+            base_address, total_size, 
+            .{ .RESERVE = 1, .COMMIT = 1 }, 
+            .{ .PAGE_READWRITE = 1},
+    ) orelse {
+        // TODO: Diagnostic
+        std.debug.print("oops", .{});
+        return 0;
+    };
+
+    game_memory.transient_storage = @as([*]u8, @alignCast(@ptrCast(
+                game_memory.permanent_storage))) + game_memory.permanent_storage_size;
 
     var input: [2]handmade.GameInput = undefined;
     var new_input = &input[0];
@@ -532,86 +562,86 @@ pub fn wWinMain(
 
         var controller_idx: u32 = 0;
         const max_controller_count = if (win32.xin.XUSER_MAX_COUNT > new_input.controllers.len) 
-                new_input.controllers.len else win32.xin.XUSER_MAX_COUNT;
+            new_input.controllers.len else win32.xin.XUSER_MAX_COUNT;
         while(controller_idx < max_controller_count) : 
             (controller_idx += 1) {
-            const old_controller = &old_input.controllers[controller_idx];
-            const new_controller = &old_input.controllers[controller_idx];
+                const old_controller = &old_input.controllers[controller_idx];
+                const new_controller = &old_input.controllers[controller_idx];
 
-            var controller_state: win32.xin.XINPUT_STATE = undefined;
-            if (xInputGetState(controller_idx, &controller_state) == 
-                @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
-                // NOTE: The controller is plugged in
-                // TODO: See if controller_state.dwPacketNumber increments too rapidly
-                const pad = &controller_state.Gamepad;
+                var controller_state: win32.xin.XINPUT_STATE = undefined;
+                if (xInputGetState(controller_idx, &controller_state) == 
+                    @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
+                    // NOTE: The controller is plugged in
+                    // TODO: See if controller_state.dwPacketNumber increments too rapidly
+                    const pad = &controller_state.Gamepad;
 
-                // TODO: DPAD
-                // const up = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_UP;
-                // const down = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_DOWN;
-                // const left = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_LEFT;
-                // const right = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_RIGHT;
+                    // TODO: DPAD
+                    // const up = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_UP;
+                    // const down = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_DOWN;
+                    // const left = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_LEFT;
+                    // const right = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_RIGHT;
 
-                new_controller.start_x = old_controller.end_x;
-                new_controller.start_y = old_controller.end_y;
-                new_controller.is_analog = true;
+                    new_controller.start_x = old_controller.end_x;
+                    new_controller.start_y = old_controller.end_y;
+                    new_controller.is_analog = true;
 
-                var x: f32 = undefined;
-                var y: f32 = undefined;
+                    var x: f32 = undefined;
+                    var y: f32 = undefined;
 
-                // TODO: Collapse to single function
-                if (pad.sThumbLX < 0) {
-                    x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32768.0;
+                    // TODO: Collapse to single function
+                    if (pad.sThumbLX < 0) {
+                        x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32768.0;
+                    } else {
+                        x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32767.0;
+                    }
+                    new_controller.min_x, new_controller.max_x, new_controller.end_x = .{x, x, x};
+
+                    if (pad.sThumbLY < 0) {
+                        y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32768.0;
+                    } else {
+                        y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32767.0;
+                    }
+                    new_controller.min_y, new_controller.max_y, new_controller.end_y = .{y, y, y};
+
+                    // const stick_x: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLX)) / x);
+                    // const stick_y: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLY)) / y);
+
+                    const xin = win32.xin;
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.down,
+                        xin.XINPUT_GAMEPAD_A, &new_controller.buttons.names.down,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right,
+                        xin.XINPUT_GAMEPAD_B, &new_controller.buttons.names.right,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left,
+                        xin.XINPUT_GAMEPAD_X, &new_controller.buttons.names.left,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.up,
+                        xin.XINPUT_GAMEPAD_Y, &new_controller.buttons.names.up,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left_shoulder,
+                        xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.buttons.names.left_shoulder,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right_shoulder,
+                        xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.buttons.names.right_shoulder,
+                    );
+
+                    // const start = pad.wButtons & win32.xin.XINPUT_GAMEPAD_START;
+                    // const back = pad.wButtons & win32.xin.XINPUT_GAMEPAD_BACK;
+
+                    // TODO: Will do deadzone handling later
+                    // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+                    // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
                 } else {
-                    x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32767.0;
+                    // NOTE:The controller is not available
                 }
-                new_controller.min_x, new_controller.max_x, new_controller.end_x = .{x, x, x};
-
-                if (pad.sThumbLY < 0) {
-                    y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32768.0;
-                } else {
-                    y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32767.0;
-                }
-                new_controller.min_y, new_controller.max_y, new_controller.end_y = .{y, y, y};
-
-                // const stick_x: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLX)) / x);
-                // const stick_y: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLY)) / y);
-
-                const xin = win32.xin;
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.down,
-                    xin.XINPUT_GAMEPAD_A, &new_controller.buttons.names.down,
-                );
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right,
-                    xin.XINPUT_GAMEPAD_B, &new_controller.buttons.names.right,
-                );
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left,
-                    xin.XINPUT_GAMEPAD_X, &new_controller.buttons.names.left,
-                );
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.up,
-                    xin.XINPUT_GAMEPAD_Y, &new_controller.buttons.names.up,
-                );
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left_shoulder,
-                    xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.buttons.names.left_shoulder,
-                );
-
-                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right_shoulder,
-                    xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.buttons.names.right_shoulder,
-                );
-
-                // const start = pad.wButtons & win32.xin.XINPUT_GAMEPAD_START;
-                // const back = pad.wButtons & win32.xin.XINPUT_GAMEPAD_BACK;
-
-                // TODO: Will do deadzone handling later
-                // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-                // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
-            } else {
-                // NOTE:The controller is not available
             }
-        }
 
         var byte_to_lock: u32 = undefined;
         var target_cursor: u32 = undefined;
@@ -640,14 +670,10 @@ pub fn wWinMain(
             }
         }
 
-        const samples: [*]i16 = @alignCast(@ptrCast(win32.mem.VirtualAlloc(
-                    null, sound_output.secondary_buffer_size,
-                    .{ .COMMIT = 1, .RESERVE = 1 }, win32.mem.PAGE_READWRITE))
-        );
         var sound_buffer = handmade.GameSoundOutputBuffer {
             .samples_per_second = sound_output.samples_per_second,
             .sample_count = bytes_to_write / sound_output.bytes_per_sample,
-            .samples = samples
+            .samples = samples,
         };
 
         var buffer = handmade.GameOffscreenBuffer{
@@ -657,7 +683,7 @@ pub fn wWinMain(
             .pitch = global_back_buffer.pitch,
         };
 
-        handmade.gameUpdateAndRender(new_input, &buffer, &sound_buffer);
+        handmade.gameUpdateAndRender(&game_memory, new_input, &buffer, &sound_buffer);
 
         if (sound_is_valid) {
             win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);

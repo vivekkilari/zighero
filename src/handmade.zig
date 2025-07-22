@@ -5,6 +5,32 @@
 
 const std = @import("std");
 
+pub fn kilobytes(comptime count: comptime_int) comptime_int {
+    return count * 1024;
+}
+
+pub fn megabytes(comptime count: comptime_int) comptime_int {
+    return kilobytes(count) * 1024;
+}
+
+pub fn gigabytes(comptime count: comptime_int) comptime_int {
+    return megabytes(count) * 1024;
+}
+
+pub fn terabytes(comptime count: comptime_int) comptime_int {
+    return gigabytes(count) * 1024;
+}
+
+pub const GameMemory = struct {
+    is_initialized: bool,
+
+    permanent_storage_size: u64,
+    permanent_storage: *anyopaque, // NOTE: REQUIRED to be cleared to zero at startup
+
+    transient_storage_size: u64,
+    transient_storage: *anyopaque, // NOTE: REQUIRED to be cleared to zero at startup
+};
+
 // TODO: In the future, rendering _specifically_ will become a three-tiered abstraction!!!
 pub const GameOffscreenBuffer = struct {
     memory: ?*anyopaque,
@@ -53,6 +79,7 @@ pub const GameControllerInput = struct {
 };
 
 pub const GameInput = struct {
+    // TODO: Insert clock values here
     controllers: [4]GameControllerInput,
 };
 
@@ -116,36 +143,44 @@ fn renderWeirdGradient(
 }
 
 pub fn gameUpdateAndRender(
+    memory: *GameMemory,
     input: *GameInput,
     buffer: *GameOffscreenBuffer, 
     sound_buffer: *GameSoundOutputBuffer,
 ) void {
-    const local = struct{
-        var blue_offset: i32 = 0; 
-        var green_offset: i32 = 0;
-        var tone_hz: i32 = 256;
+    const GameState = struct {
+        tone_hz: i32,
+        green_offset:  i32,
+        blue_offset: i32,
     };
+
+    std.debug.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
+    
+    var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
+    if (!memory.is_initialized) {
+        game_state.tone_hz = 256;
+        game_state.green_offset = 0;
+        game_state.blue_offset = 0;
+
+        memory.is_initialized = true;
+    }
 
     const input_0 = input.controllers[0];
     if (input_0.is_analog) {
-        local.blue_offset += @intFromFloat(4.0 * input_0.end_x);
-        local.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input_0.end_y));
+        game_state.blue_offset += @intFromFloat(4.0 * input_0.end_x);
+        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input_0.end_y));
     } else {
 
     }
 
     if (input_0.buttons.names.down.ended_down) {
-        local.green_offset += 1;
+        game_state.green_offset += 1;
     }
 
 
     // TODO: Allow sample offsets here for more robust platform options
-    gameOutputSound(sound_buffer, local.tone_hz);
-    renderWeirdGradient(buffer, local.blue_offset, local.green_offset);
+    gameOutputSound(sound_buffer, game_state.tone_hz);
+    renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
 }
-
-
-
-
 
 
