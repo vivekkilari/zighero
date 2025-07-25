@@ -58,37 +58,66 @@ pub const GameButtonState = struct {
 };
 
 pub const GameControllerInput = struct {
-    is_analog: bool = true,
+    is_connected: bool = false,
+    is_analog: bool = false,
+    stick_average_x: f32 = 0,
+    stick_average_y: f32 = 0,
 
-    start_x: f32 = 0,
-    start_y: f32 = 0,
+    move_up: GameButtonState = undefined,
+    move_down: GameButtonState = undefined,
+    move_left: GameButtonState = undefined,
+    move_right: GameButtonState = undefined,
 
-    min_x: f32 = 0,
-    min_y: f32 = 0,
+    action_up: GameButtonState = undefined,
+    action_down: GameButtonState = undefined,
+    action_left: GameButtonState = undefined,
+    action_right: GameButtonState = undefined,
 
-    max_x: f32 = 0,
-    max_y: f32 = 0,
+    left_shoulder: GameButtonState = undefined,
+    right_shoulder: GameButtonState = undefined,
 
-    end_x: f32 = 0,
-    end_y: f32 = 0,
+    start: GameButtonState = undefined,
+    back: GameButtonState = undefined,
 
-    buttons: union {
-        names: struct {
-            up: GameButtonState,
-            down: GameButtonState,
-            left: GameButtonState,
-            right: GameButtonState,
-            left_shoulder: GameButtonState,
-            right_shoulder: GameButtonState,
-        },
-        array: [6]GameButtonState,
-    } = undefined,
+    pub const button_count: u8 =  blk: {
+        var count = 0;
+        for (@typeInfo(GameControllerInput).@"struct".fields) |field| {
+            if (field.type == GameButtonState) count += 1;
+        }
+        break :blk count;
+    };
+
+    pub fn getButton(self: *GameControllerInput, idx: usize) *GameButtonState {
+        return switch (idx) {
+            0 => &self.move_up,
+            1 => &self.move_down,
+            2 => &self.move_left,
+            3 => &self.move_right,
+
+            4 => &self.action_up,
+            5 => &self.action_down,
+            6 => &self.action_left,
+            7 => &self.action_right,
+
+            8 => &self.left_shoulder,
+            9 => &self.right_shoulder,
+
+            10 => &self.start,
+            11 => &self.back,
+            else => unreachable,
+        };
+    }
 };
 
 pub const GameInput = struct {
     // TODO: Insert clock values here
-    controllers: [4]GameControllerInput,
+    controllers: [5]GameControllerInput,
 };
+
+pub inline fn getController(input: *GameInput, controller_idx: usize) *GameControllerInput {
+    std.debug.assert(controller_idx < input.controllers.len);
+    return &input.controllers[controller_idx];
+}
 
 pub fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const sound_output = struct {
@@ -183,18 +212,19 @@ pub fn gameUpdateAndRender(
         memory.is_initialized = true;
     }
 
-    const input_0 = input.controllers[0];
-    if (input_0.is_analog) {
-        game_state.blue_offset += @intFromFloat(4.0 * input_0.end_x);
-        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input_0.end_y));
-    } else {
+    for (input.controllers) |controller| {
+        if (controller.is_analog) {
+            game_state.blue_offset += @intFromFloat(4.0 * controller.stick_average_x);
+            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
+        } else {
+            if (controller.move_left.ended_down) game_state.blue_offset -= 1;
+            if (controller.move_right.ended_down) game_state.blue_offset += 1;
+        }
 
+        if (controller.action_down.ended_down) {
+            game_state.green_offset += 1;
+        }
     }
-
-    if (input_0.buttons.names.down.ended_down) {
-        game_state.green_offset += 1;
-    }
-
 
     // TODO: Allow sample offsets here for more robust platform options
     gameOutputSound(sound_buffer, game_state.tone_hz);

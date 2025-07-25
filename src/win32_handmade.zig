@@ -62,7 +62,7 @@ const Win32OffscreenBuffer = struct {
 };
 
 // TODO: Global for now
-var global_running: bool = true;
+var global_running: bool = undefined;
 var global_back_buffer = Win32OffscreenBuffer{
     .info = undefined,
     .memory = null,
@@ -496,6 +496,7 @@ fn win32ProcessKeyboardMessage(
     new_state: *handmade.GameButtonState,
     is_down: bool,
 ) void {
+    std.debug.assert(new_state.ended_down != is_down);
     new_state.ended_down = is_down;
     new_state.half_transition_count += 1;
 }
@@ -510,6 +511,126 @@ fn win32ProcessXInputDigitalButton(
     new_state.half_transition_count = if (old_state.ended_down != new_state.ended_down) 1 else 0;
 }
 
+fn win32ProcessXInputStickValue(
+    value: i16,
+    deadzone_threshold: i16,
+) f32 {
+    // NOTE: Handles deadzone and normalizes input to be between deadzone and max values
+    return if (value < -deadzone_threshold) 
+        @as(f32, @floatFromInt(value + deadzone_threshold)) / (32768.0 - @as(f32, @floatFromInt(deadzone_threshold)))
+    else if (value > deadzone_threshold)
+        @as(f32, @floatFromInt(value - deadzone_threshold)) / (32767.0 - @as(f32, @floatFromInt(deadzone_threshold)))
+    else 0;
+}
+
+fn win32ProcessPendingMessages(keyboard_controller: *handmade.GameControllerInput) void {
+    var message: win32.wm.MSG = undefined;
+
+    while (win32.wm.PeekMessage(&message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
+        if (message.message == win32.wm.WM_QUIT) {
+            global_running = false;
+        }
+
+        switch (message.message) {
+            win32.wm.WM_SYSKEYDOWN, 
+            win32.wm.WM_SYSKEYUP,
+            win32.wm.WM_KEYDOWN,
+            win32.wm.WM_KEYUP => {
+                const vk_code: u32 = @intCast(message.wParam);
+                const was_down = (message.lParam & (1 << 30)) != 0;
+                const is_down = (message.lParam & (1 << 31)) == 0;
+
+                if (was_down == is_down) break;
+
+                switch (vk_code) {
+                    'W' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.move_up,
+                            is_down,
+                        );
+                    },
+                    'A' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.move_left,
+                            is_down,
+                        );
+                    },
+                    'S' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.move_down,
+                            is_down,
+                        );
+                    },
+                    'D' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.move_right,
+                            is_down,
+                        );
+                    },
+                    'Q' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.left_shoulder,
+                            is_down,
+                        );
+                    },
+                    'E' => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.right_shoulder,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_UP) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.action_up,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_LEFT) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.action_left,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_DOWN) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.action_down,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_RIGHT) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.action_right,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_ESCAPE) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.back,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_SPACE) => {
+                        win32ProcessKeyboardMessage(
+                            &keyboard_controller.start,
+                            is_down,
+                        );
+                    },
+                    @intFromEnum(win32.km.VK_F4) => {
+                        const alt_key_was_down = (message.lParam & (1 << 29)) != 0;
+                        if (!alt_key_was_down) break;
+
+                        global_running = false;
+                    },
+                    else => {}
+                }
+            },
+            else => {
+                _ = win32.wm.TranslateMessage(&message);
+                _ = win32.wm.DispatchMessageA(&message);
+            }
+        }
+    }
+}
 pub fn wWinMain(
     instance: ?win32.fnd.HINSTANCE,
     _: ?win32.fnd.HINSTANCE,
@@ -612,170 +733,140 @@ pub fn wWinMain(
     _ = win32.perf.QueryPerformanceCounter(&last_counter);
     var last_cycle_count: u64 = rdtsc();
 
+    global_running = true;
     while (global_running) {
-        var message: win32.wm.MSG = undefined;
+        const old_keyboard_controller = handmade.getController(old_input, 0);
+        const new_keyboard_controller = handmade.getController(new_input, 0);
+        new_keyboard_controller.* = .{
+            .is_connected = true,
+        };
+        for (0..handmade.GameControllerInput.button_count) |idx| {
+            new_keyboard_controller.getButton(idx).ended_down = 
+                old_keyboard_controller.getButton(idx).ended_down; 
+        }
 
-        // TODO: We can't zero everything because the up/down state will be wrong
-        var keyboard_controller = &new_input.controllers[0];
-        keyboard_controller.* = .{};
+        win32ProcessPendingMessages(new_keyboard_controller);
 
-        while (win32.wm.PeekMessage(&message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
-            if (message.message == win32.wm.WM_QUIT) {
-                global_running = false;
-            }
-            
-            blk: switch (message.message) {
-                win32.wm.WM_SYSKEYDOWN, 
-                win32.wm.WM_SYSKEYUP,
-                win32.wm.WM_KEYDOWN,
-                win32.wm.WM_KEYUP => {
-                    const vk_code: u32 = @intCast(message.wParam);
-                    const was_down = (message.lParam & (1 << 30)) != 0;
-                    const is_down = (message.lParam & (1 << 31)) == 0;
-
-                    if (was_down == is_down) break :blk;
-
-                    switch (vk_code) {
-                        'W' => {},
-                        'A' => {},
-                        'S' => {},
-                        'D' => {},
-                        'Q' => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.left_shoulder,
-                                is_down,
-                            );
-                        },
-                        'E' => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.right_shoulder,
-                                is_down,
-                            );
-                        },
-                        @intFromEnum(win32.km.VK_UP) => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.up,
-                                is_down,
-                            );
-                        },
-                        @intFromEnum(win32.km.VK_LEFT) => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.left,
-                                is_down,
-                            );
-                        },
-                        @intFromEnum(win32.km.VK_DOWN) => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.down,
-                                is_down,
-                            );
-                        },
-                        @intFromEnum(win32.km.VK_RIGHT) => {
-                            win32ProcessKeyboardMessage(
-                                &keyboard_controller.buttons.names.right,
-                                is_down,
-                            );
-                        },
-                        @intFromEnum(win32.km.VK_ESCAPE) => {
-                            global_running = false;
-                        },
-                        @intFromEnum(win32.km.VK_SPACE) => {},
-                        @intFromEnum(win32.km.VK_F4) => {
-                            const alt_key_was_down = (message.lParam & (1 << 29)) != 0;
-                            if (!alt_key_was_down) break :blk;
-
-                            global_running = false;
-                        },
-                        else => {}
-                    }
-                },
-                else => {
-                    _ = win32.wm.TranslateMessage(&message);
-                    _ = win32.wm.DispatchMessageA(&message);
-                }
-            }
+        var max_controller_count = win32.xin.XUSER_MAX_COUNT;
+        if (max_controller_count > new_input.controllers.len - 1) {
+            max_controller_count = new_input.controllers.len - 1; 
         }
 
         var controller_idx: u32 = 0;
-        const max_controller_count = if (win32.xin.XUSER_MAX_COUNT > new_input.controllers.len) 
-            new_input.controllers.len else win32.xin.XUSER_MAX_COUNT;
         while(controller_idx < max_controller_count) : 
             (controller_idx += 1) {
-                const old_controller = &old_input.controllers[controller_idx];
-                const new_controller = &old_input.controllers[controller_idx];
+                const our_controller_idx = controller_idx + 1;
+                const old_controller = &old_input.controllers[our_controller_idx];
+                const new_controller = &new_input.controllers[our_controller_idx];
 
                 var controller_state: win32.xin.XINPUT_STATE = undefined;
                 if (xInputGetState(controller_idx, &controller_state) == 
                     @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
                     // NOTE: The controller is plugged in
                     // TODO: See if controller_state.dwPacketNumber increments too rapidly
+                    new_controller.is_connected = true;
+
                     const pad = &controller_state.Gamepad;
 
-                    // TODO: DPAD
-                    // const up = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_UP;
-                    // const down = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_DOWN;
-                    // const left = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_LEFT;
-                    // const right = pad.wButtons & win32.xin.XINPUT_GAMEPAD_DPAD_RIGHT;
+                    // TODO: This is a square deadzone, check XInput to verify that
+                    // the deadzone is "round"
+                    new_controller.stick_average_x = win32ProcessXInputStickValue(
+                            pad.sThumbLX, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+                    );
+                    new_controller.stick_average_y = win32ProcessXInputStickValue(
+                        pad.sThumbLY, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+                    );
 
-                    new_controller.start_x = old_controller.end_x;
-                    new_controller.start_y = old_controller.end_y;
-                    new_controller.is_analog = true;
-
-                    var x: f32 = undefined;
-                    var y: f32 = undefined;
-
-                    // TODO: Collapse to single function
-                    if (pad.sThumbLX < 0) {
-                        x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32768.0;
-                    } else {
-                        x = @as(f32, @floatFromInt(pad.sThumbLX)) / 32767.0;
+                    if ((new_controller.stick_average_x != 0) and
+                        (new_controller.stick_average_y != 0)) {
+                        new_controller.is_analog = true;
                     }
-                    new_controller.min_x, new_controller.max_x, new_controller.end_x = .{x, x, x};
-
-                    if (pad.sThumbLY < 0) {
-                        y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32768.0;
-                    } else {
-                        y = @as(f32, @floatFromInt(pad.sThumbLY)) / 32767.0;
-                    }
-                    new_controller.min_y, new_controller.max_y, new_controller.end_y = .{y, y, y};
-
-                    // const stick_x: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLX)) / x);
-                    // const stick_y: i16 = @intFromFloat(@as(f32, @floatFromInt(pad.sThumbLY)) / y);
 
                     const xin = win32.xin;
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.down,
-                        xin.XINPUT_GAMEPAD_A, &new_controller.buttons.names.down,
+                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_UP) != 0) {
+                        new_controller.stick_average_y = 1;
+                        new_controller.is_analog = false;
+                    }
+
+                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_DOWN) != 0) {
+                        new_controller.stick_average_y = -1;
+                        new_controller.is_analog = false;
+                    }
+
+                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_RIGHT) != 0) {
+                        new_controller.stick_average_x = 1;
+                        new_controller.is_analog = false;
+                    }
+
+                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_LEFT) != 0) {
+                        new_controller.stick_average_x = -1;
+                        new_controller.is_analog = false;
+                    }
+
+                    const threshold = 0.5;
+                    win32ProcessXInputDigitalButton(
+                        if (new_controller.stick_average_x < -threshold) 1 else 0, 
+                        &old_controller.move_left, 1, 
+                        &new_controller.move_left,
                     );
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right,
-                        xin.XINPUT_GAMEPAD_B, &new_controller.buttons.names.right,
+                    win32ProcessXInputDigitalButton(
+                        if (new_controller.stick_average_x > threshold) 1 else 0, 
+                        &old_controller.move_right, 1, 
+                        &new_controller.move_right,
                     );
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left,
-                        xin.XINPUT_GAMEPAD_X, &new_controller.buttons.names.left,
+                    win32ProcessXInputDigitalButton(
+                        if (new_controller.stick_average_y < -threshold) 1 else 0, 
+                        &old_controller.move_down, 1, 
+                        &new_controller.move_down,
                     );
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.up,
-                        xin.XINPUT_GAMEPAD_Y, &new_controller.buttons.names.up,
+                    win32ProcessXInputDigitalButton(
+                        if (new_controller.stick_average_y > threshold) 1 else 0, 
+                        &old_controller.move_up, 1, 
+                        &new_controller.move_up,
                     );
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.left_shoulder,
-                        xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.buttons.names.left_shoulder,
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_down,
+                        xin.XINPUT_GAMEPAD_A, &new_controller.action_down,
                     );
 
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.buttons.names.right_shoulder,
-                        xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.buttons.names.right_shoulder,
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_right,
+                        xin.XINPUT_GAMEPAD_B, &new_controller.action_right,
                     );
 
-                    // const start = pad.wButtons & win32.xin.XINPUT_GAMEPAD_START;
-                    // const back = pad.wButtons & win32.xin.XINPUT_GAMEPAD_BACK;
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_left,
+                        xin.XINPUT_GAMEPAD_X, &new_controller.action_left,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_up,
+                        xin.XINPUT_GAMEPAD_Y, &new_controller.action_up,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.left_shoulder,
+                        xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.left_shoulder,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.right_shoulder,
+                        xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.right_shoulder,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.start,
+                        xin.XINPUT_GAMEPAD_START, &new_controller.start,
+                    );
+
+                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.back,
+                        xin.XINPUT_GAMEPAD_BACK, &new_controller.back,
+                    );
 
                     // TODO: Will do deadzone handling later
                     // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
                     // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
                 } else {
                     // NOTE:The controller is not available
+                    new_controller.is_connected = false;
                 }
             }
 
