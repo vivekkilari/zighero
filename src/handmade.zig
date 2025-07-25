@@ -58,22 +58,21 @@ pub const GameButtonState = struct {
 };
 
 pub const GameControllerInput = struct {
-    is_analog: bool,
+    is_analog: bool = true,
 
-    start_x: f32,
-    start_y: f32,
+    start_x: f32 = 0,
+    start_y: f32 = 0,
 
-    min_x: f32,
-    min_y: f32,
+    min_x: f32 = 0,
+    min_y: f32 = 0,
 
-    max_x: f32,
-    max_y: f32,
+    max_x: f32 = 0,
+    max_y: f32 = 0,
 
-    end_x: f32,
-    end_y: f32,
+    end_x: f32 = 0,
+    end_y: f32 = 0,
 
     buttons: union {
-        array: [6]GameButtonState,
         names: struct {
             up: GameButtonState,
             down: GameButtonState,
@@ -81,8 +80,9 @@ pub const GameControllerInput = struct {
             right: GameButtonState,
             left_shoulder: GameButtonState,
             right_shoulder: GameButtonState,
-        }
-    }
+        },
+        array: [6]GameButtonState,
+    } = undefined,
 };
 
 pub const GameInput = struct {

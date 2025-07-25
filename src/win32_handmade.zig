@@ -377,46 +377,9 @@ fn win32WindowCallback(
 ) callconv(winapi) win32.fnd.LRESULT {
     var result: win32.fnd.LRESULT = undefined;
 
-    msg: switch (message) {
+    switch (message) {
         win32.wm.WM_CLOSE, win32.wm.WM_DESTROY => global_running = false,
         win32.wm.WM_ACTIVATEAPP => win32.dbg.OutputDebugString("WM_ACTIVATEAPP\n"),
-        win32.wm.WM_SYSKEYDOWN, 
-        win32.wm.WM_SYSKEYUP,
-        win32.wm.WM_KEYDOWN,
-        win32.wm.WM_KEYUP => {
-            const vk_code: u8 = @intCast(w_param);
-            const was_down = (l_param & (1 << 30)) != 0;
-            const is_down = (l_param & (1 << 31)) == 0;
-
-            if (was_down == is_down) break :msg;
-
-            switch (vk_code) {
-                'W' => {},
-                'A' => {},
-                'S' => {},
-                'D' => {},
-                'Q' => {},
-                'E' => {},
-                @intFromEnum(win32.km.VK_UP) => {},
-                @intFromEnum(win32.km.VK_LEFT) => {},
-                @intFromEnum(win32.km.VK_DOWN) => {},
-                @intFromEnum(win32.km.VK_RIGHT) => {},
-                @intFromEnum(win32.km.VK_ESCAPE) => {
-                    std.debug.print("ESCAPE: ", .{});
-                    if (is_down) std.debug.print("IsDown ", .{});
-                    if (was_down) std.debug.print("WASDOWN", .{});
-                    std.debug.print("\n", .{});
-                },
-                @intFromEnum(win32.km.VK_SPACE) => {},
-                @intFromEnum(win32.km.VK_F4) => {
-                    const alt_key_was_down = (l_param & (1 << 29)) != 0;
-                    if (!alt_key_was_down) return 0;
-
-                    global_running = false;
-                },
-                else => {}
-            }
-        },
         win32.wm.WM_PAINT => {
             var paint: win32.gdi.PAINTSTRUCT = undefined;
             if (win32.gdi.BeginPaint(window, &paint)) |deviceContext| {
@@ -527,6 +490,14 @@ fn win32FillSoundBuffer(
         region_1, region_1_size, 
         region_2, region_2_size,
     );
+}
+
+fn win32ProcessKeyboardMessage(
+    new_state: *handmade.GameButtonState,
+    is_down: bool,
+) void {
+    new_state.ended_down = is_down;
+    new_state.half_transition_count += 1;
 }
 
 fn win32ProcessXInputDigitalButton(
@@ -644,14 +615,85 @@ pub fn wWinMain(
     while (global_running) {
         var message: win32.wm.MSG = undefined;
 
-        while (win32.wm.PeekMessage(
-                &message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
+        // TODO: We can't zero everything because the up/down state will be wrong
+        var keyboard_controller = &new_input.controllers[0];
+        keyboard_controller.* = .{};
+
+        while (win32.wm.PeekMessage(&message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
             if (message.message == win32.wm.WM_QUIT) {
                 global_running = false;
             }
+            
+            blk: switch (message.message) {
+                win32.wm.WM_SYSKEYDOWN, 
+                win32.wm.WM_SYSKEYUP,
+                win32.wm.WM_KEYDOWN,
+                win32.wm.WM_KEYUP => {
+                    const vk_code: u32 = @intCast(message.wParam);
+                    const was_down = (message.lParam & (1 << 30)) != 0;
+                    const is_down = (message.lParam & (1 << 31)) == 0;
 
-            _ = win32.wm.TranslateMessage(&message);
-            _ = win32.wm.DispatchMessage(&message);
+                    if (was_down == is_down) break :blk;
+
+                    switch (vk_code) {
+                        'W' => {},
+                        'A' => {},
+                        'S' => {},
+                        'D' => {},
+                        'Q' => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.left_shoulder,
+                                is_down,
+                            );
+                        },
+                        'E' => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.right_shoulder,
+                                is_down,
+                            );
+                        },
+                        @intFromEnum(win32.km.VK_UP) => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.up,
+                                is_down,
+                            );
+                        },
+                        @intFromEnum(win32.km.VK_LEFT) => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.left,
+                                is_down,
+                            );
+                        },
+                        @intFromEnum(win32.km.VK_DOWN) => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.down,
+                                is_down,
+                            );
+                        },
+                        @intFromEnum(win32.km.VK_RIGHT) => {
+                            win32ProcessKeyboardMessage(
+                                &keyboard_controller.buttons.names.right,
+                                is_down,
+                            );
+                        },
+                        @intFromEnum(win32.km.VK_ESCAPE) => {
+                            global_running = false;
+                        },
+                        @intFromEnum(win32.km.VK_SPACE) => {},
+                        @intFromEnum(win32.km.VK_F4) => {
+                            const alt_key_was_down = (message.lParam & (1 << 29)) != 0;
+                            if (!alt_key_was_down) break :blk;
+
+                            global_running = false;
+                        },
+                        else => {}
+                    }
+                },
+                else => {
+                    _ = win32.wm.TranslateMessage(&message);
+                    _ = win32.wm.DispatchMessageA(&message);
+                }
+            }
         }
 
         var controller_idx: u32 = 0;
