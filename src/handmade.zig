@@ -4,6 +4,7 @@
 // (this may expand in the future - sound on separate thread, etc.)
 
 const std = @import("std");
+const win_h = @import("win32_handmade.zig");
 
 pub fn kilobytes(comptime count: comptime_int) comptime_int {
     return count * 1024;
@@ -20,6 +21,12 @@ pub fn gigabytes(comptime count: comptime_int) comptime_int {
 pub fn terabytes(comptime count: comptime_int) comptime_int {
     return gigabytes(count) * 1024;
 }
+
+pub const Platform = struct {
+    DEBUGPlatformFreeFileMemory: fn (*anyopaque) void = undefined,
+    DEBUGPlatformReadEntireFile: fn ([*:0]const u8) struct { u32, ?*anyopaque } = undefined,
+    DEBUGPlatformWriteEntireFile: fn ([*:0]const u8, u32, *anyopaque) bool = undefined,
+};
 
 pub const GameMemory = struct {
     is_initialized: bool,
@@ -143,6 +150,7 @@ fn renderWeirdGradient(
 }
 
 pub fn gameUpdateAndRender(
+    platform: *const Platform,
     memory: *GameMemory,
     input: *GameInput,
     buffer: *GameOffscreenBuffer, 
@@ -158,9 +166,19 @@ pub fn gameUpdateAndRender(
     
     var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
     if (!memory.is_initialized) {
+        const filename = "./handmade.zig";
+
+        const contents_size, const contents_result = platform.DEBUGPlatformReadEntireFile(filename);
+        if (contents_result) |contents| {
+            _ = platform.DEBUGPlatformWriteEntireFile(
+                "../zig-out/data/test.out", 
+                contents_size, 
+                contents
+            );
+            platform.DEBUGPlatformFreeFileMemory(contents);
+        }
+
         game_state.tone_hz = 256;
-        game_state.green_offset = 0;
-        game_state.blue_offset = 0;
 
         memory.is_initialized = true;
     }

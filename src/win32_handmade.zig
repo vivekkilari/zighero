@@ -30,6 +30,7 @@ const win32 = struct {
     const dbg = root.system.diagnostics.debug;
     const gdi = root.graphics.gdi;
     const mem = root.system.memory;
+    const file = root.storage.file_system;
     const xin = root.ui.input.xbox_controller;
     const km = root.ui.input.keyboard_and_mouse;
     const lib = root.system.library_loader;
@@ -84,6 +85,12 @@ var win32DirectSoundCreate: *const fn (
     pUnkOuter: ?*win32.com.IUnknown,
 ) callconv(winapi) win32.fnd.HRESULT = undefined;
 
+const win32Platform = handmade.Platform {
+    .DEBUGPlatformFreeFileMemory = DEBUGWin32FreeFileMemory,
+    .DEBUGPlatformReadEntireFile = DEBUGWin32ReadEntireFile,
+    .DEBUGPlatformWriteEntireFile = DEBUGWin32WriteEntireFile,
+};
+
 inline fn rdtsc() u64 {
     var hi: u32 = 0;
     var low: u32 = 0;
@@ -93,6 +100,93 @@ inline fn rdtsc() u64 {
           [hi] "={edx}" (hi),
     );
     return (@as(u64, hi) << 32) | @as(u64, low);
+}
+
+pub fn DEBUGWin32ReadEntireFile(filename: [*:0]const u8) struct {u32, *anyopaque} {
+    if (builtin.mode != .Debug) return .{.contents_size = 0, .contents = undefined};
+
+    var result: struct { u32, *anyopaque } = .{ 0, undefined };
+
+    const file_handle = win32.file.CreateFile(
+        filename,
+        win32.file.FILE_GENERIC_READ,
+        win32.file.FILE_SHARE_READ,
+        null,
+        win32.file.OPEN_EXISTING,
+        .{},
+        null,
+    ); 
+    if (file_handle == win32.fnd.INVALID_HANDLE_VALUE) {
+        return result;
+    }
+
+    defer _ = win32.fnd.CloseHandle(file_handle);
+
+    var file_size = win32.fnd.LARGE_INTEGER { .QuadPart = 0 };
+    if (win32.file.GetFileSizeEx(file_handle, &file_size) == 0) {
+        return result;
+    }
+
+    const file_size_32: u32 = @intCast(file_size.QuadPart);
+    result[1] = win32.mem.VirtualAlloc(
+            null, file_size_32, .{ .RESERVE = 1, .COMMIT = 1}, .{ .PAGE_READWRITE = 1}
+    ) orelse {
+        return result;
+    };
+
+    var bytes_read: u32 = 0;
+    if (win32.file.ReadFile(file_handle, result[1], file_size_32, &bytes_read, null) 
+        != 0 and file_size_32 == bytes_read){
+        // NOTE: File read successfully
+        result[0] = bytes_read;
+    } else {
+        DEBUGWin32FreeFileMemory(result[1]);
+        result[1] = undefined;
+    }
+
+    return result;
+} 
+
+pub fn DEBUGWin32FreeFileMemory(memory: *anyopaque) void { 
+    if (builtin.mode != .Debug) return;
+
+    _ = win32.mem.VirtualFree(memory, 0, .RELEASE);
+}
+
+pub fn DEBUGWin32WriteEntireFile(
+    filename: [*:0]const u8,
+    memory_size: u32,
+    memory: *anyopaque
+) bool {
+    if (builtin.mode != .Debug) return false;
+
+    var result = false;
+
+    const file_handle = win32.file.CreateFile(
+        filename,
+        win32.file.FILE_GENERIC_WRITE,
+        win32.file.FILE_SHARE_NONE,
+        null,
+        win32.file.CREATE_ALWAYS,
+        .{},
+        null,
+    ); 
+
+    if (file_handle == win32.fnd.INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    defer _ = win32.fnd.CloseHandle(file_handle);
+
+    var bytes_written: u32 = 0;
+    if (win32.file.WriteFile(file_handle, memory, memory_size, &bytes_written, null)
+        != 0) {
+        // NOTE: File written successfully
+        result = bytes_written == memory_size;
+    } else {
+        // TODO: Logging
+    }
+
+    return result;
 }
 
 fn xInputGetStateStub(_: u32, _: ?*win32.xin.XINPUT_STATE) 
@@ -683,7 +777,7 @@ pub fn wWinMain(
             .pitch = global_back_buffer.pitch,
         };
 
-        handmade.gameUpdateAndRender(&game_memory, new_input, &buffer, &sound_buffer);
+        handmade.gameUpdateAndRender(&win32Platform, &game_memory, new_input, &buffer, &sound_buffer);
 
         if (sound_is_valid) {
             win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
