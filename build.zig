@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
 
     exe.linkSystemLibrary("User32");
     exe.linkSystemLibrary("Gdi32");
+    exe.linkSystemLibrary("winmm");
 
 
     // win32 API Zig bindings

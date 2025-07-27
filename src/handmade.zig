@@ -53,8 +53,8 @@ pub const GameSoundOutputBuffer = struct {
 };
 
 pub const GameButtonState = struct {
-    half_transition_count: i32,
-    ended_down: bool,
+    half_transition_count: u32 = 0,
+    ended_down: bool = false,
 };
 
 pub const GameControllerInput = struct {
@@ -63,21 +63,21 @@ pub const GameControllerInput = struct {
     stick_average_x: f32 = 0,
     stick_average_y: f32 = 0,
 
-    move_up: GameButtonState = undefined,
-    move_down: GameButtonState = undefined,
-    move_left: GameButtonState = undefined,
-    move_right: GameButtonState = undefined,
+    move_up: GameButtonState = .{},
+    move_down: GameButtonState = .{},
+    move_left: GameButtonState = .{},
+    move_right: GameButtonState = .{},
 
-    action_up: GameButtonState = undefined,
-    action_down: GameButtonState = undefined,
-    action_left: GameButtonState = undefined,
-    action_right: GameButtonState = undefined,
+    action_up: GameButtonState = .{},
+    action_down: GameButtonState = .{},
+    action_left: GameButtonState = .{},
+    action_right: GameButtonState = .{},
 
-    left_shoulder: GameButtonState = undefined,
-    right_shoulder: GameButtonState = undefined,
+    left_shoulder: GameButtonState = .{},
+    right_shoulder: GameButtonState = .{},
 
-    start: GameButtonState = undefined,
-    back: GameButtonState = undefined,
+    start: GameButtonState = .{},
+    back: GameButtonState = .{},
 
     pub const button_count: u8 =  blk: {
         var count = 0;
@@ -87,21 +87,18 @@ pub const GameControllerInput = struct {
         break :blk count;
     };
 
-    pub fn getButton(self: *GameControllerInput, idx: usize) *GameButtonState {
+    pub fn button(self: *GameControllerInput, idx: usize) *GameButtonState {
         return switch (idx) {
             0 => &self.move_up,
             1 => &self.move_down,
             2 => &self.move_left,
             3 => &self.move_right,
-
             4 => &self.action_up,
             5 => &self.action_down,
             6 => &self.action_left,
             7 => &self.action_right,
-
             8 => &self.left_shoulder,
             9 => &self.right_shoulder,
-
             10 => &self.start,
             11 => &self.back,
             else => unreachable,
@@ -111,7 +108,7 @@ pub const GameControllerInput = struct {
 
 pub const GameInput = struct {
     // TODO: Insert clock values here
-    controllers: [5]GameControllerInput,
+    controllers: [5]GameControllerInput = undefined,
 };
 
 pub inline fn getController(input: *GameInput, controller_idx: usize) *GameControllerInput {
@@ -230,5 +227,3 @@ pub fn gameUpdateAndRender(
     gameOutputSound(sound_buffer, game_state.tone_hz);
     renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
 }
-
-

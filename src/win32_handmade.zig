@@ -43,26 +43,9 @@ const win32 = struct {
 // NOTE: Required for win32 API to convert automatically choose ? ANSI : WIDE
 pub const UNICODE = false;
 
-const Win32SoundOutput = struct {
-    samples_per_second: u32,
-    bytes_per_sample: u32,
-    secondary_buffer_size: u32,
-    running_sample_index: u32,
-    latency_sample_count: u32,
-    t_sine: f32,
-};
-
-const Win32OffscreenBuffer = struct {
-    info: win32.gdi.BITMAPINFO,
-    memory: ?*anyopaque,
-    width: i32,
-    height: i32,
-    pitch: i32,
-    bytes_per_pixel: u4,
-};
-
 // TODO: Global for now
 var global_running: bool = undefined;
+var global_perf_count_frequency: i64 = undefined;
 var global_back_buffer = Win32OffscreenBuffer{
     .info = undefined,
     .memory = null,
@@ -89,6 +72,24 @@ const win32Platform = handmade.Platform {
     .DEBUGPlatformFreeFileMemory = DEBUGWin32FreeFileMemory,
     .DEBUGPlatformReadEntireFile = DEBUGWin32ReadEntireFile,
     .DEBUGPlatformWriteEntireFile = DEBUGWin32WriteEntireFile,
+};
+
+const Win32SoundOutput = struct {
+    samples_per_second: u32,
+    bytes_per_sample: u32,
+    secondary_buffer_size: u32,
+    running_sample_index: u32,
+    latency_sample_count: u32,
+    t_sine: f32,
+};
+
+const Win32OffscreenBuffer = struct {
+    info: win32.gdi.BITMAPINFO,
+    memory: ?*anyopaque,
+    width: i32,
+    height: i32,
+    pitch: i32,
+    bytes_per_pixel: u4,
 };
 
 inline fn rdtsc() u64 {
@@ -377,10 +378,16 @@ fn win32WindowCallback(
 ) callconv(winapi) win32.fnd.LRESULT {
     var result: win32.fnd.LRESULT = undefined;
 
+    const wm = win32.wm;
+
     switch (message) {
-        win32.wm.WM_CLOSE, win32.wm.WM_DESTROY => global_running = false,
-        win32.wm.WM_ACTIVATEAPP => win32.dbg.OutputDebugString("WM_ACTIVATEAPP\n"),
-        win32.wm.WM_PAINT => {
+        wm.WM_CLOSE, wm.WM_DESTROY => global_running = false,
+        wm.WM_ACTIVATEAPP => win32.dbg.OutputDebugString("WM_ACTIVATEAPP\n"),
+        wm.WM_SYSKEYDOWN, wm.WM_SYSKEYUP, wm.WM_KEYDOWN, wm.WM_KEYUP => {
+            std.debug.print("Keyboard input came in through a non-dispatch  message!", .{});
+            unreachable;
+        },
+        wm.WM_PAINT => {
             var paint: win32.gdi.PAINTSTRUCT = undefined;
             if (win32.gdi.BeginPaint(window, &paint)) |deviceContext| {
                 const dimensions = win32GetWindowDimension(window);
@@ -394,7 +401,7 @@ fn win32WindowCallback(
 
             _ = win32.gdi.EndPaint(window, &paint);
         },
-        else => result = win32.wm.DefWindowProc(window, message, w_param, l_param),
+        else => result = wm.DefWindowProc(window, message, w_param, l_param),
     }
 
     return result;
@@ -527,110 +534,60 @@ fn win32ProcessPendingMessages(keyboard_controller: *handmade.GameControllerInpu
     var message: win32.wm.MSG = undefined;
 
     while (win32.wm.PeekMessage(&message, null, 0, 0, win32.wm.PM_REMOVE) > 0) {
-        if (message.message == win32.wm.WM_QUIT) {
-            global_running = false;
-        }
-
         switch (message.message) {
-            win32.wm.WM_SYSKEYDOWN, 
-            win32.wm.WM_SYSKEYUP,
-            win32.wm.WM_KEYDOWN,
-            win32.wm.WM_KEYUP => {
-                const vk_code: u32 = @intCast(message.wParam);
-                const was_down = (message.lParam & (1 << 30)) != 0;
-                const is_down = (message.lParam & (1 << 31)) == 0;
+            win32.wm.WM_QUIT => global_running = false,
+            win32.wm.WM_SYSKEYUP, win32.wm.WM_SYSKEYDOWN, win32.wm.WM_KEYUP, win32.wm.WM_KEYDOWN => {
+                const vk_code: win32.km.VIRTUAL_KEY = 
+                    @enumFromInt(win32.zig.loword(message.wParam));
 
-                if (was_down == is_down) break;
+                const key_flags = win32.zig.hiword(message.lParam);
+                const was_down = (key_flags & win32.wm.KF_REPEAT) == win32.wm.KF_REPEAT;
+                const is_down = (key_flags & win32.wm.KF_UP) != win32.wm.KF_UP;
 
-                switch (vk_code) {
-                    'W' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.move_up,
-                            is_down,
-                        );
-                    },
-                    'A' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.move_left,
-                            is_down,
-                        );
-                    },
-                    'S' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.move_down,
-                            is_down,
-                        );
-                    },
-                    'D' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.move_right,
-                            is_down,
-                        );
-                    },
-                    'Q' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.left_shoulder,
-                            is_down,
-                        );
-                    },
-                    'E' => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.right_shoulder,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_UP) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.action_up,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_LEFT) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.action_left,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_DOWN) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.action_down,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_RIGHT) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.action_right,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_ESCAPE) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.back,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_SPACE) => {
-                        win32ProcessKeyboardMessage(
-                            &keyboard_controller.start,
-                            is_down,
-                        );
-                    },
-                    @intFromEnum(win32.km.VK_F4) => {
-                        const alt_key_was_down = (message.lParam & (1 << 29)) != 0;
-                        if (!alt_key_was_down) break;
+                const km = win32.km;
+                if (was_down != is_down) {
+                    switch (vk_code) {
+                        km.VK_W => win32ProcessKeyboardMessage(&keyboard_controller.move_up, is_down),
+                        km.VK_A => win32ProcessKeyboardMessage(&keyboard_controller.move_left, is_down),
+                        km.VK_S => win32ProcessKeyboardMessage(&keyboard_controller.move_down, is_down),
+                        km.VK_D => win32ProcessKeyboardMessage(&keyboard_controller.move_right, is_down),
+                        km.VK_Q => win32ProcessKeyboardMessage(&keyboard_controller.left_shoulder, is_down),
+                        km.VK_E => win32ProcessKeyboardMessage(&keyboard_controller.right_shoulder, is_down),
+                        km.VK_UP => win32ProcessKeyboardMessage(&keyboard_controller.action_up, is_down),
+                        km.VK_LEFT => win32ProcessKeyboardMessage(&keyboard_controller.action_left, is_down),
+                        km.VK_DOWN => win32ProcessKeyboardMessage(&keyboard_controller.action_down, is_down),
+                        km.VK_RIGHT => win32ProcessKeyboardMessage(&keyboard_controller.action_right, is_down),
+                        km.VK_ESCAPE => win32ProcessKeyboardMessage(&keyboard_controller.back, is_down),
+                        km.VK_SPACE => win32ProcessKeyboardMessage(&keyboard_controller.start, is_down),
+                        else => {},
+                    }
+                }
 
-                        global_running = false;
-                    },
-                    else => {}
+                const alt_key_was_down = (message.lParam & (1 << 29)) != 0;
+                if ((vk_code == win32.km.VK_F4) and alt_key_was_down) {
+                    global_running = false;
                 }
             },
             else => {
                 _ = win32.wm.TranslateMessage(&message);
                 _ = win32.wm.DispatchMessageA(&message);
-            }
+            },
         }
     }
 }
+
+pub inline fn win32GetWallClock() win32.fnd.LARGE_INTEGER {
+    var result: win32.fnd.LARGE_INTEGER = undefined;
+    _ = win32.perf.QueryPerformanceCounter(&result);
+    return result;
+}
+
+pub inline fn win32GetSecondsElapsed(start: win32.fnd.LARGE_INTEGER, end: win32.fnd.LARGE_INTEGER) f32 {
+    const result = @as(f32, @floatFromInt(end.QuadPart - start.QuadPart)) / 
+        @as(f32, @floatFromInt(global_perf_count_frequency));
+    return result;
+}
+
 pub fn wWinMain(
     instance: ?win32.fnd.HINSTANCE,
     _: ?win32.fnd.HINSTANCE,
@@ -639,7 +596,14 @@ pub fn wWinMain(
 ) callconv(winapi) c_int {
     var perf_count_frequency_result: win32.fnd.LARGE_INTEGER = undefined;
     _ = win32.perf.QueryPerformanceFrequency(&perf_count_frequency_result);
-    const perf_count_frequency = perf_count_frequency_result.QuadPart;
+    global_perf_count_frequency = perf_count_frequency_result.QuadPart;
+
+    // NOTE: Set the Windows scheduler granularity to 1ms
+    // so that our Sleep() can be more granular
+    const desired_scheduler_ms = 1;
+    const sleep_is_granular = 
+        win32.root.media.timeBeginPeriod(desired_scheduler_ms) 
+        == win32.root.media.TIMERR_NOERROR;
 
     const window_class = win32.wm.WNDCLASS{
         .style = .{},
@@ -653,6 +617,10 @@ pub fn wWinMain(
         .lpszMenuName = null,
         .lpszClassName = "ZigHeroWindowClass",
     };
+
+    const monitor_refresh_hz: i32 = 60;
+    const game_update_hz: i32 = monitor_refresh_hz / 2;
+    const target_seconds_per_frame: f32 = 1 / @as(f32, @floatFromInt(game_update_hz));
 
     win32LoadXInput();
     win32ResizeDIBSection(&global_back_buffer, 1280, 720);
@@ -682,6 +650,9 @@ pub fn wWinMain(
         instance,
         null,
         ) orelse return 0;
+
+    const device_ctx = win32.gdi.GetDC(window) orelse return 0;
+    defer _ = win32.gdi.ReleaseDC(window, device_ctx);
 
     var sound_output: Win32SoundOutput = undefined;
     sound_output.samples_per_second = 48000;
@@ -718,20 +689,19 @@ pub fn wWinMain(
             .{ .PAGE_READWRITE = 1},
     ) orelse {
         // TODO: Diagnostic
-        std.debug.print("oops", .{});
+        std.debug.print("Memory allocation failure!", .{});
         return 0;
     };
 
     game_memory.transient_storage = @as([*]u8, @alignCast(@ptrCast(
                 game_memory.permanent_storage))) + game_memory.permanent_storage_size;
 
-    var input: [2]handmade.GameInput = undefined;
+    var input: [2]handmade.GameInput = .{ .{}, .{} };
     var new_input = &input[0];
     var old_input = &input[1];
 
-    var last_counter: win32.fnd.LARGE_INTEGER = undefined;
-    _ = win32.perf.QueryPerformanceCounter(&last_counter);
-    var last_cycle_count: u64 = rdtsc();
+    var last_counter = win32GetWallClock();
+    var last_cycle_count = rdtsc();
 
     global_running = true;
     while (global_running) {
@@ -740,9 +710,10 @@ pub fn wWinMain(
         new_keyboard_controller.* = .{
             .is_connected = true,
         };
+
         for (0..handmade.GameControllerInput.button_count) |idx| {
-            new_keyboard_controller.getButton(idx).ended_down = 
-                old_keyboard_controller.getButton(idx).ended_down; 
+            new_keyboard_controller.button(idx).ended_down = 
+                old_keyboard_controller.button(idx).ended_down; 
         }
 
         win32ProcessPendingMessages(new_keyboard_controller);
@@ -755,120 +726,121 @@ pub fn wWinMain(
         var controller_idx: u32 = 0;
         while(controller_idx < max_controller_count) : 
             (controller_idx += 1) {
-                const our_controller_idx = controller_idx + 1;
-                const old_controller = &old_input.controllers[our_controller_idx];
-                const new_controller = &new_input.controllers[our_controller_idx];
+            // NOTE: Ignores first "controller" which is keyboard
+            const our_controller_idx = controller_idx + 1;
+            const old_controller = &old_input.controllers[our_controller_idx];
+            const new_controller = &new_input.controllers[our_controller_idx];
 
-                var controller_state: win32.xin.XINPUT_STATE = undefined;
-                if (xInputGetState(controller_idx, &controller_state) == 
+            var controller_state: win32.xin.XINPUT_STATE = undefined;
+            if (xInputGetState(controller_idx, &controller_state) == 
                     @intFromEnum(win32.fnd.ERROR_SUCCESS)) {
-                    // NOTE: The controller is plugged in
-                    // TODO: See if controller_state.dwPacketNumber increments too rapidly
-                    new_controller.is_connected = true;
+                // NOTE: The controller is plugged in
+                // TODO: See if controller_state.dwPacketNumber increments too rapidly
+                new_controller.is_connected = true;
 
-                    const pad = &controller_state.Gamepad;
+                const pad = &controller_state.Gamepad;
 
-                    // TODO: This is a square deadzone, check XInput to verify that
-                    // the deadzone is "round"
-                    new_controller.stick_average_x = win32ProcessXInputStickValue(
-                            pad.sThumbLX, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-                    );
-                    new_controller.stick_average_y = win32ProcessXInputStickValue(
-                        pad.sThumbLY, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-                    );
+                // TODO: This is a square deadzone, check XInput to verify that
+                // the deadzone is "round"
+                new_controller.stick_average_x = win32ProcessXInputStickValue(
+                        pad.sThumbLX, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+                );
+                new_controller.stick_average_y = win32ProcessXInputStickValue(
+                    pad.sThumbLY, win32.xin.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+                );
 
-                    if ((new_controller.stick_average_x != 0) and
-                        (new_controller.stick_average_y != 0)) {
-                        new_controller.is_analog = true;
-                    }
-
-                    const xin = win32.xin;
-
-                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_UP) != 0) {
-                        new_controller.stick_average_y = 1;
-                        new_controller.is_analog = false;
-                    }
-
-                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_DOWN) != 0) {
-                        new_controller.stick_average_y = -1;
-                        new_controller.is_analog = false;
-                    }
-
-                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_RIGHT) != 0) {
-                        new_controller.stick_average_x = 1;
-                        new_controller.is_analog = false;
-                    }
-
-                    if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_LEFT) != 0) {
-                        new_controller.stick_average_x = -1;
-                        new_controller.is_analog = false;
-                    }
-
-                    const threshold = 0.5;
-                    win32ProcessXInputDigitalButton(
-                        if (new_controller.stick_average_x < -threshold) 1 else 0, 
-                        &old_controller.move_left, 1, 
-                        &new_controller.move_left,
-                    );
-
-                    win32ProcessXInputDigitalButton(
-                        if (new_controller.stick_average_x > threshold) 1 else 0, 
-                        &old_controller.move_right, 1, 
-                        &new_controller.move_right,
-                    );
-
-                    win32ProcessXInputDigitalButton(
-                        if (new_controller.stick_average_y < -threshold) 1 else 0, 
-                        &old_controller.move_down, 1, 
-                        &new_controller.move_down,
-                    );
-
-                    win32ProcessXInputDigitalButton(
-                        if (new_controller.stick_average_y > threshold) 1 else 0, 
-                        &old_controller.move_up, 1, 
-                        &new_controller.move_up,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_down,
-                        xin.XINPUT_GAMEPAD_A, &new_controller.action_down,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_right,
-                        xin.XINPUT_GAMEPAD_B, &new_controller.action_right,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_left,
-                        xin.XINPUT_GAMEPAD_X, &new_controller.action_left,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_up,
-                        xin.XINPUT_GAMEPAD_Y, &new_controller.action_up,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.left_shoulder,
-                        xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.left_shoulder,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.right_shoulder,
-                        xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.right_shoulder,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.start,
-                        xin.XINPUT_GAMEPAD_START, &new_controller.start,
-                    );
-
-                    win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.back,
-                        xin.XINPUT_GAMEPAD_BACK, &new_controller.back,
-                    );
-
-                    // TODO: Will do deadzone handling later
-                    // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-                    // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
-                } else {
-                    // NOTE:The controller is not available
-                    new_controller.is_connected = false;
+                if ((new_controller.stick_average_x != 0) and
+                    (new_controller.stick_average_y != 0)) {
+                    new_controller.is_analog = true;
                 }
+
+                const xin = win32.xin;
+
+                if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_UP) != 0) {
+                    new_controller.stick_average_y = 1;
+                    new_controller.is_analog = false;
+                }
+
+                if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_DOWN) != 0) {
+                    new_controller.stick_average_y = -1;
+                    new_controller.is_analog = false;
+                }
+
+                if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_RIGHT) != 0) {
+                    new_controller.stick_average_x = 1;
+                    new_controller.is_analog = false;
+                }
+
+                if ((pad.wButtons & xin.XINPUT_GAMEPAD_DPAD_LEFT) != 0) {
+                    new_controller.stick_average_x = -1;
+                    new_controller.is_analog = false;
+                }
+
+                const threshold = 0.5;
+                win32ProcessXInputDigitalButton(
+                    if (new_controller.stick_average_x < -threshold) 1 else 0, 
+                    &old_controller.move_left, 1, 
+                    &new_controller.move_left,
+                );
+
+                win32ProcessXInputDigitalButton(
+                    if (new_controller.stick_average_x > threshold) 1 else 0, 
+                    &old_controller.move_right, 1, 
+                    &new_controller.move_right,
+                );
+
+                win32ProcessXInputDigitalButton(
+                    if (new_controller.stick_average_y < -threshold) 1 else 0, 
+                    &old_controller.move_down, 1, 
+                    &new_controller.move_down,
+                );
+
+                win32ProcessXInputDigitalButton(
+                    if (new_controller.stick_average_y > threshold) 1 else 0, 
+                    &old_controller.move_up, 1, 
+                    &new_controller.move_up,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_down,
+                    xin.XINPUT_GAMEPAD_A, &new_controller.action_down,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_right,
+                    xin.XINPUT_GAMEPAD_B, &new_controller.action_right,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_left,
+                    xin.XINPUT_GAMEPAD_X, &new_controller.action_left,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.action_up,
+                    xin.XINPUT_GAMEPAD_Y, &new_controller.action_up,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.left_shoulder,
+                    xin.XINPUT_GAMEPAD_LEFT_SHOULDER, &new_controller.left_shoulder,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.right_shoulder,
+                    xin.XINPUT_GAMEPAD_RIGHT_SHOULDER, &new_controller.right_shoulder,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.start,
+                    xin.XINPUT_GAMEPAD_START, &new_controller.start,
+                );
+
+                win32ProcessXInputDigitalButton(pad.wButtons, &old_controller.back,
+                    xin.XINPUT_GAMEPAD_BACK, &new_controller.back,
+                );
+
+                // TODO: Will do deadzone handling later
+                // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+                // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+            } else {
+                // NOTE:The controller is not available
+                new_controller.is_connected = false;
             }
+        }
 
         var byte_to_lock: u32 = undefined;
         var target_cursor: u32 = undefined;
@@ -897,6 +869,8 @@ pub fn wWinMain(
             }
         }
 
+        // TODO: Sound is wrong now, because we haven't updated 
+        // it to go with the new frame loop.
         var sound_buffer = handmade.GameSoundOutputBuffer {
             .samples_per_second = sound_output.samples_per_second,
             .sample_count = bytes_to_write / sound_output.bytes_per_sample,
@@ -916,39 +890,56 @@ pub fn wWinMain(
             win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write, &sound_buffer);
         }
 
-        const device_ctx = win32.gdi.GetDC(window) orelse return 0;
+        const work_counter = win32GetWallClock();
+        const work_seconds_elapsed = win32GetSecondsElapsed(last_counter, work_counter);
+
+        var seconds_elapsed_per_frame = work_seconds_elapsed;
+        if (seconds_elapsed_per_frame < target_seconds_per_frame) {
+            if (sleep_is_granular) {
+                const sleep_ms: u32 = @intFromFloat(1000.0 * 
+                    (target_seconds_per_frame - seconds_elapsed_per_frame)); 
+                if (sleep_ms > 0) {
+                    win32.root.system.threading.Sleep(sleep_ms);
+                }
+            }
+
+            // const test_seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, 
+            //     win32GetWallClock());
+            // std.debug.assert(test_seconds_elapsed_for_frame < target_seconds_per_frame);
+
+            while (seconds_elapsed_per_frame < target_seconds_per_frame) {
+                seconds_elapsed_per_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
+            }
+        } else {
+            // TODO: MISSED FRAME RATE!
+            // TODO: Logging
+        }
+
         const dimensions = win32GetWindowDimension(window);
-        win32DrawBufferToWindow(
-            &global_back_buffer,
-            device_ctx,
-            dimensions.width,
-            dimensions.height,
-        );
-        _ = win32.gdi.ReleaseDC(window, device_ctx);
-
-        const end_cycle_count: u64 = rdtsc();
-
-        var end_counter: win32.fnd.LARGE_INTEGER = undefined;
-        _ = win32.perf.QueryPerformanceCounter(&end_counter);
-
-        const cycles_elapsed = end_cycle_count - last_cycle_count;
-        const counter_elapsed = end_counter.QuadPart - last_counter.QuadPart;
-        const ms_per_frame: f32 = @as(f32, @floatFromInt((1000 * counter_elapsed))) / 
-            @as(f32, @floatFromInt(perf_count_frequency));
-        const fps: f32 = @floatFromInt(@divTrunc(perf_count_frequency, counter_elapsed));
-        const mc_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
-
-        _ = ms_per_frame; 
-        _ = fps;
-        _ = mc_per_frame;
-        // std.debug.print("{d: >10}ms/f, {d: >10}f/s, {d: >10}mc/f\n", .{ms_per_frame, fps, mc_per_frame});
-
-        last_counter = end_counter;
-        last_cycle_count = end_cycle_count;
+        win32DrawBufferToWindow(&global_back_buffer, device_ctx, dimensions.width, dimensions.height);
 
         const temp = new_input;
         new_input = old_input;
         old_input = temp;
+
+        const end_counter = win32GetWallClock();
+        const ms_per_frame: f32 = 1000.0 * win32GetSecondsElapsed(last_counter, end_counter);
+        last_counter = end_counter;
+
+        const end_cycle_count = rdtsc();
+        const cycles_elapsed = end_cycle_count - last_cycle_count;
+        last_cycle_count = end_cycle_count;
+
+        const fps: f64 = 0;
+        const mc_per_frame: f64 = @as(f64, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+
+        _ = ms_per_frame;
+        _ = fps;
+        _ = mc_per_frame;
+        // std.debug.print(
+        //     "{d: >10}ms/f, {d: >10}f/s, {d: >10}mc/f\n", 
+        //     .{ms_per_frame, fps, mc_per_frame}
+        // );
     }
 
     return 0;
