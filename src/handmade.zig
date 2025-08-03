@@ -28,6 +28,12 @@ pub const Platform = struct {
     DEBUGPlatformWriteEntireFile: fn ([*:0]const u8, u32, *anyopaque) bool = undefined,
 };
 
+const GameState = struct {
+    tone_hz: i32,
+    green_offset:  i32,
+    blue_offset: i32,
+};
+
 pub const GameMemory = struct {
     is_initialized: bool,
 
@@ -118,25 +124,25 @@ pub inline fn getController(input: *GameInput, controller_idx: usize) *GameContr
 
 pub fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const sound_output = struct {
-        var t_sine: f32 = undefined;
+        var t_sine: f32 = 0;
     };
     const tone_volume = 3000;
 
     const wave_period = sound_buffer.samples_per_second / @as(u32, @intCast(tone_hz));
 
     var sample_out: [*]i16 = sound_buffer.samples;
-    for (0..sound_buffer.sample_count) |_| {
+    for (0..sound_buffer.sample_count) |idx| {
         const sine_value: f32 = @sin(sound_output.t_sine);
         const sample_value: i16 = @intFromFloat(
             sine_value * @as(f32, @floatFromInt(tone_volume)));
 
-        sample_out[0] = sample_value;
-        sample_out += 1;
-        sample_out[0] = sample_value;
-        sample_out += 1;
+        sample_out[idx * 2] = sample_value;
+        sample_out[idx * 2 + 1] = sample_value;
 
         sound_output.t_sine += std.math.tau /
             @as(f32, @floatFromInt(wave_period));
+        if (sound_output.t_sine > std.math.tau) 
+            sound_output.t_sine -= std.math.tau;
     }
 }
 
@@ -180,13 +186,7 @@ pub fn gameUpdateAndRender(
     memory: *GameMemory,
     input: *GameInput,
     buffer: *GameOffscreenBuffer, 
-    sound_buffer: *GameSoundOutputBuffer,
 ) void {
-    const GameState = struct {
-        tone_hz: i32,
-        green_offset:  i32,
-        blue_offset: i32,
-    };
 
     std.debug.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
     
@@ -204,7 +204,7 @@ pub fn gameUpdateAndRender(
             platform.DEBUGPlatformFreeFileMemory(contents);
         }
 
-        game_state.tone_hz = 256;
+        game_state.tone_hz = 512;
 
         memory.is_initialized = true;
     }
@@ -212,7 +212,7 @@ pub fn gameUpdateAndRender(
     for (input.controllers) |controller| {
         if (controller.is_analog) {
             game_state.blue_offset += @intFromFloat(4.0 * controller.stick_average_x);
-            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
+            game_state.tone_hz = 512 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
         } else {
             if (controller.move_left.ended_down) game_state.blue_offset -= 1;
             if (controller.move_right.ended_down) game_state.blue_offset += 1;
@@ -223,7 +223,10 @@ pub fn gameUpdateAndRender(
         }
     }
 
-    // TODO: Allow sample offsets here for more robust platform options
-    gameOutputSound(sound_buffer, game_state.tone_hz);
     renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
+}
+
+pub fn gameGetSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+    const game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
+    gameOutputSound(sound_buffer, game_state.tone_hz);
 }
