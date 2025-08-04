@@ -72,6 +72,7 @@ var win32DirectSoundCreate: *const fn (
 
 const Win32GameCode = struct {
     game_code_dll: win32.fnd.HINSTANCE = undefined,
+    dll_last_write_time: win32.fnd.FILETIME = undefined,
     updateAndRender: *const @TypeOf(shared.gameUpdateAndRenderStub) = &shared.gameUpdateAndRenderStub,
     getSoundSamples: *const @TypeOf(shared.gameGetSoundSamplesStub) = &shared.gameGetSoundSamplesStub,
 
@@ -214,16 +215,24 @@ fn xInputSetStateStub(_: u32, _: ?*win32.xin.XINPUT_VIBRATION) callconv(winapi) 
     return @intFromEnum(win32.fnd.ERROR_DEVICE_NOT_CONNECTED);
 }
 
-fn win32LoadGameCode() Win32GameCode {
+fn win32GetLastWriteTime(filename: [*:0]const u8) win32.fnd.FILETIME {
+    var last_write_time: win32.fnd.FILETIME = undefined;
+
+    var find_data: win32.file.WIN32_FIND_DATA = undefined;
+    const find_handle = win32.file.FindFirstFile(filename, &find_data);
+    if (find_handle != @intFromPtr(win32.fnd.INVALID_HANDLE_VALUE)) {
+        last_write_time = find_data.ftLastWriteTime;
+        _ = win32.file.FindClose(find_handle);
+    }
+
+    return last_write_time;
+}
+fn win32LoadGameCode(source_dll_name: [*:0]const u8, temp_dll_name: [*:0]const u8) Win32GameCode {
     var result = Win32GameCode{};
 
-    _ = win32.file.CopyFile(
-        "C:/personal/dev/gen/zighero/zig-out/bin/handmade_game.dll", 
-        "C:/personal/dev/gen/zighero/zig-out/bin/handmade_game_temp.dll",
-        0,
-    );
-    result.game_code_dll = win32.lib.LoadLibrary(
-        "C:/personal/dev/gen/zighero/zig-out/bin/handmade_game_temp.dll") orelse {
+    result.dll_last_write_time = win32GetLastWriteTime(source_dll_name);
+    _ = win32.file.CopyFile(source_dll_name, temp_dll_name, 0);
+    result.game_code_dll = win32.lib.LoadLibrary(temp_dll_name) orelse {
         // TODO: Diagnostic
         std.debug.panic("Could not find shared.dll!", .{});
         unreachable;
@@ -749,12 +758,52 @@ fn win32DebugSyncDisplay(
     }
 }
 
+fn catStrings(source_a: []const u8, source_b: []const u8, dest: [:0]u8) void {
+    var i: usize = 0;
+
+    for (source_a) |char| {
+        dest[i] = char;
+        i += 1;
+    }
+
+    for (source_b) |char| {
+        dest[i] = char;
+        i += 1;
+    }
+}
+
 pub fn wWinMain(
     instance: ?win32.fnd.HINSTANCE,
     _: ?win32.fnd.HINSTANCE,
     _: [*:0]u16,
     _: u32,
 ) callconv(winapi) c_int {
+    var exe_filepath = [_:0]u8{0} ** win32.fnd.MAX_PATH;
+    _ = win32.lib.GetModuleFileName(null, &exe_filepath, win32.fnd.MAX_PATH);
+
+    var one_past_last_slash: usize = 0;
+    for (0..win32.fnd.MAX_PATH, exe_filepath) |idx, scan| {
+        if (scan == 0) break;
+        if (scan == '\\') {
+            one_past_last_slash = idx + 1;
+        }
+    }
+
+    const source_game_code_dll_filename = "handmade_game.dll";
+    var source_game_code_dll_fullpath = [_:0]u8{0} ** win32.fnd.MAX_PATH;
+    catStrings(exe_filepath[0..one_past_last_slash], 
+        source_game_code_dll_filename, 
+        source_game_code_dll_fullpath[0..win32.fnd.MAX_PATH:0],
+    );
+
+    const temp_game_code_dll_filename = "handmade_game_temp.dll";
+    var temp_game_code_dll_fullpath = [_:0]u8{0} ** win32.fnd.MAX_PATH;
+    catStrings(exe_filepath[0..one_past_last_slash], 
+        temp_game_code_dll_filename, 
+        temp_game_code_dll_fullpath[0..win32.fnd.MAX_PATH:0],
+    );
+
+
     var perf_count_frequency_result: win32.fnd.LARGE_INTEGER = undefined;
     _ = win32.perf.QueryPerformanceFrequency(&perf_count_frequency_result);
     global_perf_count_frequency = perf_count_frequency_result.QuadPart;
@@ -893,17 +942,15 @@ pub fn wWinMain(
     var audio_latency_seconds: f32 = 0;
     var sound_is_valid = false;
 
-    var game_code = win32LoadGameCode();
-    var load_counter: u32 = 120;
+    var game_code = win32LoadGameCode(&source_game_code_dll_fullpath, &temp_game_code_dll_fullpath);
 
     var last_cycle_count = rdtsc();
     while (global_running) {
-        if (load_counter > 120) {
+        const new_dll_write_time = win32GetLastWriteTime(source_game_code_dll_filename);
+        if (win32.file.CompareFileTime(&new_dll_write_time, &game_code.dll_last_write_time) != 0) {
             win32UnloadGameCode(&game_code);
-            game_code = win32LoadGameCode();
-            load_counter = 0;
+            game_code = win32LoadGameCode(&source_game_code_dll_fullpath, &temp_game_code_dll_fullpath);
         }
-        load_counter += 1;
 
         const old_keyboard_controller = shared.getController(old_input, 0);
         const new_keyboard_controller = shared.getController(new_input, 0);
