@@ -6,13 +6,23 @@ pub fn build(b: *std.Build) void {
 
     // Define executable
     const exe = b.addExecutable(.{
-        .name = "zighero",
+        .name = "handmade_win32",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/win32_handmade.zig"),
+            .root_source_file = b.path("src/handmade_win32.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
+
+    // Separate platform and game layers
+    const handmade_game = b.addSharedLibrary(.{
+        .name = "handmade_game",
+        .root_source_file = b.path("src/handmade.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    b.installArtifact(handmade_game);
 
     // win32 API Zig bindings
     const zwin32 = b.dependency("zigwin32", .{});
