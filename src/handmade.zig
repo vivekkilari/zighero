@@ -17,7 +17,8 @@ fn gameOutputSound(
 
     var sample_out: [*]i16 = sound_buffer.samples;
     for (0..sound_buffer.sample_count) |idx| {
-        const sine_value: f32 = @sin(game_state.t_sine);
+        const sine_value: f32 = 
+            if (false) @sin(game_state.t_sine) else 0;
         const sample_value: i16 = @intFromFloat(
             sine_value * @as(f32, @floatFromInt(tone_volume)));
 
@@ -66,6 +67,33 @@ fn renderWeirdGradient(
     }
 }
 
+fn renderPlayer(buffer: *shared.GameOffscreenBuffer, player_x: i32, player_y: i32) void {
+    const mem_ptr = @as([*]u8, @ptrCast(buffer.memory.?));
+    const buf_end = mem_ptr + 
+        @as(u32, @intCast(buffer.pitch * buffer.height));
+
+
+    const color = 0xFFFFFFFF;
+    const top = player_y;
+    const bottom = player_y +% 10;
+
+    var x = player_x;
+    while (x < player_x +% 10) : (x += 1) {
+        var pixel_adr: [*]u8 = mem_ptr + 
+            (@as(u32, @bitCast(x)) *| @as(u32, @intCast(buffer.bytes_per_pixel))) + 
+            (@as(u32, @bitCast(top *| buffer.pitch)));
+        var y = top;
+        while (y < bottom) : (y += 1) {
+            if (@intFromPtr(pixel_adr) >= @intFromPtr(mem_ptr) and
+                @intFromPtr(pixel_adr + 4) <= @intFromPtr(buf_end)) {
+                const pixel: [*]u32 = @alignCast(@ptrCast(pixel_adr));
+                pixel[0] = color;
+            }
+            pixel_adr += @intCast(buffer.pitch);
+        }
+    }
+}
+
 pub export fn gameUpdateAndRender(
     memory: *shared.GameMemory,
     input: *shared.GameInput,
@@ -89,24 +117,41 @@ pub export fn gameUpdateAndRender(
         game_state.tone_hz = 512;
         game_state.t_sine = 0;
 
+        game_state.player_x = 100;
+        game_state.player_y = 100;
+
         memory.is_initialized = true;
     }
 
     for (input.controllers) |controller| {
         if (controller.is_analog) {
-            game_state.blue_offset += @intFromFloat(4.0 * controller.stick_average_x);
+            game_state.blue_offset +%= @intFromFloat(4.0 * controller.stick_average_x);
             game_state.tone_hz = 512 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
         } else {
-            if (controller.move_left.ended_down) game_state.blue_offset -= 1;
-            if (controller.move_right.ended_down) game_state.blue_offset += 1;
+            if (controller.move_left.ended_down) game_state.blue_offset -%= 1;
+            if (controller.move_right.ended_down) game_state.blue_offset +%= 1;
         }
 
         if (controller.action_down.ended_down) {
-            game_state.green_offset += 1;
+            game_state.green_offset +%= 1;
         }
+
+
+        game_state.player_x +%= @intFromFloat(7.0 * controller.stick_average_x);
+        game_state.player_y -%= @as(i32, @intFromFloat((7.0 * controller.stick_average_y)));
+        if (game_state.t_jump > 0) {
+            game_state.player_y +%= @intFromFloat(
+                10 * std.math.sin(0.5 * std.math.pi * game_state.t_jump));
+        }
+
+        if (controller.action_down.ended_down) {
+            game_state.t_jump = 5;
+        }
+        game_state.t_jump -= 0.033;
     }
 
     renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
+    renderPlayer(buffer, game_state.player_x, game_state.player_y);
 }
 
 pub export fn gameGetSoundSamples(

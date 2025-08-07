@@ -30,15 +30,18 @@ pub fn build(b: *std.Build) void {
     // Install artifact
     // Needed to use zig build run on 
     // zig-out instead of .zig-cache
-    const install_artifact = b.addInstallArtifact(handmade_platform, .{});
-    b.getInstallStep().dependOn(&install_artifact.step);
+    const install_handmade_platform = b.addInstallArtifact(handmade_platform, .{});
+    b.getInstallStep().dependOn(&install_handmade_platform.step);
+
+    const install_handmade_game = b.addInstallArtifact(handmade_game, .{});
 
     // Game code dll
     b.installArtifact(handmade_game);
 
     // Run artifact
     const run_exe = b.addRunArtifact(handmade_platform);
-    run_exe.step.dependOn(&install_artifact.step);
+    run_exe.step.dependOn(&install_handmade_platform.step);
+    run_exe.step.dependOn(&install_handmade_game.step);
 
     // Run step
     const run_step = b.step("run", "Run the app");

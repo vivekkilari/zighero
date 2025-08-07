@@ -8,6 +8,10 @@ pub const GameState = struct {
     blue_offset: i32,
 
     t_sine: f32,
+
+    player_x: i32,
+    player_y: i32,
+    t_jump: f32,
 };
 
 pub const DebugFileResult = extern struct {
@@ -35,6 +39,7 @@ pub const GameOffscreenBuffer = struct {
     width: i32,
     height: i32,
     pitch: i32,
+    bytes_per_pixel: i32,
 };
 
 pub const GameSoundOutputBuffer = struct {
